@@ -1,0 +1,14 @@
+captureId: "312699858354176"
+tunnelId: demo
+timestamp: 2026-04-16T12:32:18.856Z
+request:
+  method: PUT
+  path: /api/orders/7?notify=true
+  headers:
+    host: demo.tt.localhost:8080
+    user-agent: curl/7.81.0
+    accept: "*/*"
+    content-type: application/json
+    content-length: "45"
+  bodyEncoding: utf8
+  body: "{\"status\":\"shipped\",\"tracking\":\"BR123456789\"}"

@@ -1,0 +1,74 @@
+name: the-tubes
+
+services:
+
+  # ── Tunnel server ────────────────────────────────────────────────────────────
+  tt-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: serve
+    ports:
+      - "8080:8080"        # public HTTP (tunnel traffic)
+      - "9000:9000"        # admin/API port (separate)
+      - "10000-10010:10000-10010"  # tunnel TCP port range
+    environment:
+      TT_PUBLIC_PORT: "8080"
+      TT_PUBLIC_ADDRESS: "0.0.0.0"
+      TT_PUBLIC_DOMAIN: "tt.localhost"
+      TT_API_PORT: "9000"
+      TT_API_ADDRESS: "0.0.0.0"
+      TT_TUNNEL_PORT_START: "10000"
+      TT_TUNNEL_PORT_END: "10010"
+      TT_MAX_CONNECTIONS_PER_TUNNEL: "5"
+      TT_RECONNECT_WINDOW_MS: "30000"
+      # TT_HMAC_SECRET: "change-me-to-a-32-char-secret-here"
+    networks:
+      - tt_net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # ── Expose client ────────────────────────────────────────────────────────────
+  tt-expose:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: expose
+    depends_on:
+      tt-server:
+        condition: service_healthy
+      fake-app:
+        condition: service_started
+    ports:
+      - "9090:9090"
+    environment:
+      TT_LOCAL_PORT: "80"
+      TT_LOCAL_ADDRESS: "fake-app"
+      TT_SERVER_URL: "http://tt-server:9000"
+      TT_TUNNEL_SUBDOMAIN: "demo"
+      # TT_SESSION_TOKEN: "compose-demo-session-token"
+      TT_CAPTURE_DIR: "/captures"
+      TT_FLOWS_DIR: "/flows"
+      # TT_HMAC_SECRET: "change-me-to-a-32-char-secret-here"
+      TT_ADMIN_PORT: "9090"
+      TT_ADMIN_ADDRESS: "0.0.0.0"  # required for host access inside Docker
+    volumes:
+      - ./.dump:/captures
+      - ./.tt:/home/thetubes/.tt
+      - ./flows:/flows:ro
+    networks:
+      - tt_net
+
+  # ── Fake local app ───────────────────────────────────────────────────────────
+  fake-app:
+    image: traefik/whoami
+    networks:
+      - tt_net
+
+networks:
+  tt_net:
+    driver: bridge

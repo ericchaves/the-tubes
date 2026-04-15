@@ -1,0 +1,14 @@
+captureId: "312699854303232"
+tunnelId: demo
+timestamp: 2026-04-16T12:32:17.867Z
+request:
+  method: POST
+  path: /api/orders
+  headers:
+    host: demo.tt.localhost:8080
+    user-agent: curl/7.81.0
+    accept: "*/*"
+    content-type: application/json
+    content-length: "71"
+  bodyEncoding: utf8
+  body: "{\"product\":\"widget\",\"qty\":3,\"price\":9.99,\"customer\":\"user@example.com\"}"

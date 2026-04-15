@@ -1,0 +1,14 @@
+node_modules/
+.git/
+test/
+docs/
+.env
+.env.*
+.captures/
+.dump/
+.tt/
+coverage/
+Taskfile.yaml
+compose.yml
+compose.prod.yml
+*.md

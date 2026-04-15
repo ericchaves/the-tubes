@@ -1,0 +1,14 @@
+captureId: "312699858317312"
+tunnelId: demo
+timestamp: 2026-04-16T12:32:18.847Z
+request:
+  method: PUT
+  path: /api/users/42
+  headers:
+    host: demo.tt.localhost:8080
+    user-agent: curl/7.81.0
+    accept: "*/*"
+    content-type: application/json
+    content-length: "31"
+  bodyEncoding: utf8
+  body: "{\"name\":\"Alice\",\"role\":\"admin\"}"

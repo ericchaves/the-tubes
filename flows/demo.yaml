@@ -1,0 +1,40 @@
+target: http://demo.tt.localhost:8080
+
+steps:
+  # 1. GET / — root request, no querystring
+  - capture: demo/demo.312699854155776.req.yaml
+
+  # 2. GET /api/users?page=1&limit=10 — list with pagination querystring
+  - capture: demo/demo.312699854192640.req.yaml
+    idleMs: 200
+
+  # 3. GET /api/products?category=tools — list with filter querystring
+  - capture: demo/demo.312699854229504.req.yaml
+    idleMs: 200
+
+  # 4. POST / — root POST with JSON body (event tracking)
+  - capture: demo/demo.312699854266368.req.yaml
+    idleMs: 200
+
+  # 5. POST /api/orders — create order with JSON body
+  - capture: demo/demo.312699854303232.req.yaml
+    idleMs: 200
+
+  # 6. POST /api/users — create user with JSON body
+  - capture: demo/demo.312699858284544.req.yaml
+    idleMs: 200
+
+  # 7. PUT /api/users/42 — update user by ID with JSON body
+  - capture: demo/demo.312699858317312.req.yaml
+    idleMs: 200
+
+  # 8. PUT /api/orders/7?notify=true — update order with querystring + JSON body
+  - capture: demo/demo.312699858354176.req.yaml
+    idleMs: 200
+
+  # 9. DELETE /api/users/42 — delete user by ID, no body
+  - capture: demo/demo.312699858391040.req.yaml
+    idleMs: 200
+
+  # 10. DELETE /api/orders/7?reason=cancelled — delete order with querystring
+  - capture: demo/demo.312699858423808.req.yaml

@@ -1,0 +1,12 @@
+captureId: "312699854192640"
+tunnelId: demo
+timestamp: 2026-04-16T12:32:17.840Z
+request:
+  method: GET
+  path: /api/users?page=1&limit=10
+  headers:
+    host: demo.tt.localhost:8080
+    user-agent: curl/7.81.0
+    accept: "*/*"
+  bodyEncoding: utf8
+  body: ""

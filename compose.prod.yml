@@ -1,0 +1,150 @@
+# Production compose: the tubes server + Traefik with Let's Encrypt (DNS challenge)
+#
+# Required environment variables (set in .env.prod or shell before running):
+#
+#   TT_PUBLIC_DOMAIN   — wildcard base domain, e.g. tunnel.example.com
+#   TT_HMAC_SECRET     — shared HMAC secret, min 32 chars
+#                        generate: openssl rand -hex 32
+#   ACME_EMAIL         — e-mail for Let's Encrypt expiry notifications
+#
+# Required if using Route 53 for DNS challenge (change for other providers):
+#   AWS_HOSTED_ZONE_ID — Route 53 hosted zone ID
+#   AWS_REGION         — AWS region of the hosted zone
+#
+# Optional (defaults shown):
+#   REGISTRY           — image registry  (default: ghcr.io)
+#   ORG                — registry org    (default: ericchaves)
+#   TAG                — image tag       (default: latest)
+#
+# Usage:
+#   docker compose -f compose.prod.yml --env-file .env.prod up -d
+#
+# See docs/DEPLOYMENT-TRAEFIK.md for full setup instructions.
+
+name: the-tubes-prod
+
+services:
+
+  # ── Traefik ─────────────────────────────────────────────────────────────────
+  traefik:
+    image: traefik:v3.5.3
+    container_name: traefik
+    restart: unless-stopped
+    networks:
+      - tt_net
+    command:
+      - "--api.insecure=false"
+      - "--api.dashboard=true"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.dashboard.address=:8080"
+      - "--entrypoints.admin.address=:9000"
+      # Let's Encrypt DNS challenge.
+      # To use a different provider, change "route53" and the env vars below.
+      # Full provider list: https://doc.traefik.io/traefik/https/acme/#providers
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:?ACME_EMAIL is required}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/etc/traefik/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.caserver=https://acme-v02.api.letsencrypt.org/directory"
+      - "--certificatesresolvers.letsencrypt.acme.dnschallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=route53"
+      - "--certificatesresolvers.letsencrypt.acme.dnschallenge.delayBeforeCheck=0"
+      - "--providers.docker=true"
+      - "--providers.docker.network=tt_net"
+      - "--providers.docker.exposedbydefault=false"
+      - "--log.level=INFO"
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8080:8080"   # Traefik dashboard — restrict at firewall level
+      - "9000:9000"   # the tubes admin API — restrict at firewall level
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-data:/etc/traefik
+    environment:
+      # Route 53 credentials — replace with your DNS provider's variables
+      AWS_HOSTED_ZONE_ID: "${AWS_HOSTED_ZONE_ID:?AWS_HOSTED_ZONE_ID is required}"
+      AWS_REGION: "${AWS_REGION:?AWS_REGION is required}"
+      AWS_SDK_LOAD_CONFIG: "true"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik-dashboard.rule=PathPrefix(`/dashboard`) || PathPrefix(`/api`)"
+      - "traefik.http.routers.traefik-dashboard.entrypoints=dashboard"
+      - "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.traefik-dashboard.service=api@internal"
+
+  # ── the tubes server ─────────────────────────────────────────────────────────
+  the-tubes:
+    image: "${REGISTRY:-ghcr.io}/${ORG:-ericchaves}/the-tubes:${TAG:-latest}"
+    container_name: tt-server
+    restart: unless-stopped
+    networks:
+      - tt_net
+    ports:
+      # Tunnel TCP connections — restrict to expose clients only (not internet)
+      - "10000-10100:10000-10100"
+    environment:
+      NODE_DEBUG: ""                    # set to "tt:*" for verbose logs
+      TT_PUBLIC_PORT: "3000"
+      TT_PUBLIC_ADDRESS: "0.0.0.0"
+      TT_PUBLIC_DOMAIN: "${TT_PUBLIC_DOMAIN:?TT_PUBLIC_DOMAIN is required}"
+      TT_PUBLIC_HTTPS: "true"
+      TT_EXTERNAL_HTTP_PORT: "80"
+      TT_EXTERNAL_HTTPS_PORT: "443"
+      TT_API_PORT: "9000"
+      TT_API_ADDRESS: "0.0.0.0"
+      TT_TUNNEL_PORT_START: "10000"
+      TT_TUNNEL_PORT_END: "10100"
+      TT_MAX_CONNECTIONS_PER_TUNNEL: "10"
+      TT_RECONNECT_WINDOW_MS: "180000"  # 3 minutes
+      TT_TRUST_FORWARD_HEADERS: "true"
+      TT_HTTP_WAIT_TIMEOUT_MS: "5000"
+      TT_WEBSOCKET_WAIT_TIMEOUT_MS: "10000"
+      TT_RETRY_AFTER_SECONDS: "5"
+      TT_HMAC_SECRET: "${TT_HMAC_SECRET:?TT_HMAC_SECRET is required}"
+      TT_HMAC_CLOCK_SKEW_TOLERANCE_S: "60"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    labels:
+      - "traefik.enable=true"
+
+      # ── Admin API — entrypoint :9000, TLS ────────────────────────────────────
+      - "traefik.http.routers.tt-admin.rule=Host(`${TT_PUBLIC_DOMAIN:?TT_PUBLIC_DOMAIN is required}`)"
+      - "traefik.http.routers.tt-admin.entrypoints=admin"
+      - "traefik.http.routers.tt-admin.tls=true"
+      - "traefik.http.routers.tt-admin.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.tt-admin.service=tt-admin-svc"
+      - "traefik.http.services.tt-admin-svc.loadbalancer.server.port=9000"
+
+      # ── Public tunnels — HTTP → HTTPS redirect ───────────────────────────────
+      - "traefik.http.routers.tt-public-http.rule=HostRegexp(`^[a-zA-Z0-9-]+[.]${TT_PUBLIC_DOMAIN:?TT_PUBLIC_DOMAIN is required}$$`)"
+      - "traefik.http.routers.tt-public-http.entrypoints=web"
+      - "traefik.http.routers.tt-public-http.middlewares=https-redirect"
+      - "traefik.http.routers.tt-public-http.service=tt-public-svc"
+      - "traefik.http.routers.tt-public-http.priority=10"
+
+      # ── Public tunnels — HTTPS ────────────────────────────────────────────────
+      - "traefik.http.routers.tt-public.rule=HostRegexp(`^[a-zA-Z0-9-]+[.]${TT_PUBLIC_DOMAIN:?TT_PUBLIC_DOMAIN is required}$$`)"
+      - "traefik.http.routers.tt-public.entrypoints=websecure"
+      - "traefik.http.routers.tt-public.tls=true"
+      - "traefik.http.routers.tt-public.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.tt-public.tls.domains[0].main=${TT_PUBLIC_DOMAIN:?TT_PUBLIC_DOMAIN is required}"
+      - "traefik.http.routers.tt-public.tls.domains[0].sans=*.${TT_PUBLIC_DOMAIN:?TT_PUBLIC_DOMAIN is required}"
+      - "traefik.http.routers.tt-public.service=tt-public-svc"
+      - "traefik.http.routers.tt-public.priority=10"
+
+      - "traefik.http.services.tt-public-svc.loadbalancer.server.port=3000"
+
+      # ── Shared middlewares ────────────────────────────────────────────────────
+      - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
+
+networks:
+  tt_net:
+    name: tt_net
+
+volumes:
+  traefik-data:

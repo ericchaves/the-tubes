@@ -1,0 +1,115 @@
+version: '3'
+
+tasks:
+  install:
+    desc: Install dependencies
+    cmds:
+      - pnpm install
+
+  lint:
+    desc: Syntax-check all JS files
+    cmds:
+      - find bin src test -name '*.js' -print0 | xargs -0 node --check
+
+  test:
+    desc: Run unit and integration tests (fast feedback loop, excludes regression)
+    cmds:
+      - node --test 'test/unit/**/*.test.js' 'test/integration/**/*.test.js'
+
+  test:unit:
+    desc: Run unit tests
+    cmds:
+      - node --test 'test/unit/**/*.test.js'
+
+  test:integration:
+    desc: Run integration tests
+    cmds:
+      - node --test 'test/integration/**/*.test.js'
+
+  test:regression:
+    desc: Run regression tests (guard against fixed bugs; slower, not needed on every change)
+    cmds:
+      - node --test 'test/regression/**/*.test.js'
+
+  test:e2e:
+    desc: Run end-to-end tests
+    cmds:
+      - node --test 'test/e2e/**/*.test.js'
+
+  test:all:
+    desc: Run all tests including regression (use before releases)
+    cmds:
+      - node --test 'test/unit/**/*.test.js' 'test/integration/**/*.test.js' 'test/regression/**/*.test.js' 'test/e2e/**/*.test.js'
+
+  test:watch:
+    desc: Run unit and integration tests in watch mode
+    cmds:
+      - node --test --watch 'test/unit/**/*.test.js' 'test/integration/**/*.test.js'
+
+  run:serve:
+    desc: Run tubes in serve mode
+    cmds:
+      - node bin/tt.js serve --env-file .env
+
+  run:expose:
+    desc: Run tubes in expose mode
+    cmds:
+      - node bin/tt.js expose --env-file .env
+
+  run:replay:
+    desc: Run a replay manifest
+    cmds:
+      - node bin/tt.js replay --manifest ./flows/onboarding.yaml
+
+  replay:
+    desc: "Replay a flow manifest inside the tt-expose container. Usage: task replay flow=demo"
+    vars:
+      MANIFEST: '{{.flow | default "demo"}}'
+    cmds:
+      - docker compose exec tt-expose node bin/tt.js replay
+          --manifest /flows/{{.MANIFEST}}.yaml
+          --target-url http://tt-server:8080
+          --send-host-header
+
+  docker:build:
+    desc: Build Docker image
+    cmds:
+      - docker build -t the-tubes:local .
+
+  docker:publish:
+    desc: "Build multi-arch image and push to registry. Params: tag (default: latest), registry (default: ghcr.io)"
+    vars:
+      TAG: '{{.tag | default "latest"}}'
+      REGISTRY: '{{.registry | default "ghcr.io"}}'
+      REGISTRY_ORG: '{{.org | default "ericchaves"}}'
+      IMAGE: '{{.REGISTRY}}/{{.REGISTRY_ORG}}/{{.IMAGE_NAME | default "the-tubes"}}'
+    cmds:
+      - docker buildx create --use --name tt-builder --bootstrap 2>/dev/null || docker buildx use tt-builder
+      - docker buildx build
+          --platform linux/amd64,linux/arm64
+          --tag {{.IMAGE}}:{{.TAG}}
+          {{if ne .TAG "latest"}}--tag {{.IMAGE}}:latest{{end}}
+          --push
+          .
+      - docker buildx rm tt-builder
+
+  docker:up:
+    desc: Start all services via compose
+    cmds:
+      - mkdir -p .tt .dump && chmod 777 .tt .dump
+      - docker compose up --build
+
+  docker:down:
+    desc: Stop and remove compose services
+    cmds:
+      - docker compose down -v
+
+  dump:clean:
+    desc: Remove all captured request/response files from .dump/
+    cmds:
+      - rm -f .dump/*
+
+  clean:
+    desc: Remove generated artifacts
+    cmds:
+      - rm -rf node_modules coverage .captures
