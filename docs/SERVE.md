@@ -95,16 +95,16 @@ See [DEPLOYMENT.md](./DEPLOYMENT.md) for full reverse proxy configuration.
 
 ## Admin Dashboard
 
-The server exposes a real-time dashboard at `/admin` (and `/admin/:tunnelId` for per-tunnel detail). It shows active tunnels, server configuration, and a live event stream of every request, response, and lifecycle event.
+The server exposes a real-time dashboard at `/admin` (and `/tubes/:tunnelId` for per-tunnel detail). It shows active tunnels, server configuration, and a live event stream of every request, response, and lifecycle event.
 
 ```bash
 # Dashboard on the default port
 tt serve --public-port 8080
-# → http://localhost:8080/admin
+# → http://localhost:8080/tubes
 
 # Dashboard on a separate, firewall-restricted port
 tt serve --public-port 80 --api-port 9000
-# → http://localhost:9000/admin
+# → http://localhost:9000/tubes
 ```
 
 The dashboard has no built-in authentication — restrict access at the firewall or proxy layer. Use `--api-address 127.0.0.1` to bind the dashboard to loopback only.

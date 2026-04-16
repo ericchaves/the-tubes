@@ -1,5 +1,5 @@
 /**
- * HTML page generators for /admin and /admin/:tunnelId.
+ * HTML page generators for /tubes and /tubes/:tunnelId.
  * All CSS and JS are inline — zero external dependencies.
  *
  * XSS safety: all user-controlled values (tunnel IDs, request paths, headers)
@@ -151,7 +151,7 @@ function makeLogRow(e, showTunnel) {
       row.appendChild(span);
     } else {
       const a = document.createElement('a');
-      a.href = '/admin/' + encodeURIComponent(e.tunnelId);
+      a.href = '/tubes/' + encodeURIComponent(e.tunnelId);
       a.textContent = e.tunnelId; // textContent escapes automatically
       row.appendChild(a);
     }
@@ -195,7 +195,7 @@ function setupCollapsible() {
 `;
 
 /**
- * Generate the HTML for GET /admin (overview page).
+ * Generate the HTML for GET /tubes (overview page).
  * The config object is serialised via JSON — keys and values are
  * hardcoded strings from our own config module, not user input.
  *
@@ -296,7 +296,7 @@ function renderTunnels() {
     // ID + link
     const tdId = document.createElement('td');
     const a = document.createElement('a');
-    a.href = '/admin/' + encodeURIComponent(t.id);
+    a.href = '/tubes/' + encodeURIComponent(t.id);
     a.textContent = t.id;
     tdId.appendChild(a);
     // Status badge
@@ -409,7 +409,7 @@ setInterval(() => {
   if (el) el.textContent = 'up ' + h + 'h ' + String(m).padStart(2,'0') + 'm ' + String(sec).padStart(2,'0') + 's';
 }, 1000);
 
-setupSse('/admin/events', handleEvent, document.getElementById('sse-dot'));
+setupSse('/tubes/events', handleEvent, document.getElementById('sse-dot'));
 setupCollapsible();
 </script>
 </body>
@@ -417,7 +417,7 @@ setupCollapsible();
 }
 
 /**
- * Generate the HTML for GET /admin/:tunnelId (tunnel detail page).
+ * Generate the HTML for GET /tubes/:tunnelId (tunnel detail page).
  * The tunnelId is inserted only via JSON.stringify (safe for JS context)
  * and encodeURIComponent (safe for URL context).
  *
@@ -442,7 +442,7 @@ export function adminTunnelPage(tunnelId) {
 </head>
 <body>
 <header>
-  <a href="/admin">← all tunnels</a>
+  <a href="/tubes">← all tunnels</a>
   <span id="tunnel-title" style="font-weight:700;font-size:16px"></span>
   <span class="badge unknown" id="status-badge">unknown</span>
   <span class="sse-dot" id="sse-dot"></span>
@@ -557,7 +557,7 @@ document.getElementById('btn-disconnect').addEventListener('click', async () => 
   const name = tunnelId; // read from JS const, not DOM
   if (!confirm('Force disconnect tunnel "' + name + '"?\\nThe expose client will reconnect automatically if still running.')) return;
   try {
-    const res = await fetch('/admin/' + encodeURIComponent(name) + '/disconnect', { method: 'POST' });
+    const res = await fetch('/tubes/' + encodeURIComponent(name) + '/disconnect', { method: 'POST' });
     const body = await res.json().catch(() => ({}));
     if (!res.ok) alert('Error: ' + (body.error || res.statusText));
   } catch (err) {
@@ -565,7 +565,7 @@ document.getElementById('btn-disconnect').addEventListener('click', async () => 
   }
 });
 
-setupSse('/admin/${tunnelIdUrl}/events', handleEvent, document.getElementById('sse-dot'));
+setupSse('/tubes/${tunnelIdUrl}/events', handleEvent, document.getElementById('sse-dot'));
 setupCollapsible();
 </script>
 </body>

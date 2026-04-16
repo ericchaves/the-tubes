@@ -1,7 +1,7 @@
 /**
  * Minimal HTTP router for the admin/API server.
  * Routes: POST /api/tunnels, POST /api/tunnels/:id, GET /api/status,
- *         GET /api/tunnels/:id, GET /healthz, GET /admin/*, POST /admin/*
+ *         GET /api/tunnels/:id, GET /healthz, GET /tubes/*, POST /tubes/*
  */
 
 import { handleAdminRoute } from './admin/router.js';
@@ -24,7 +24,7 @@ export function handleAdminRequest(req, res, services) {
 
   // ── Admin dashboard routes ────────────────────────────────────────────────
 
-  if (path === '/admin' || path.startsWith('/admin/')) {
+  if (path === '/tubes' || path.startsWith('/tubes/')) {
     return handleAdminRoute(req, res, services);
   }
 

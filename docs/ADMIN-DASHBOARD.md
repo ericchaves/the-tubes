@@ -1,13 +1,13 @@
 # Admin Dashboard
 
-the tubes includes a built-in real-time dashboard served at `/admin`. It is designed for developers and server operators who need to observe live tunnel traffic, diagnose delivery failures, and manage active sessions.
+the tubes includes a built-in real-time dashboard served at `/tubes`. It is designed for developers and server operators who need to observe live tunnel traffic, diagnose delivery failures, and manage active sessions.
 
 ## Accessing the Dashboard
 
 The dashboard is served by the same server that handles tunnel management (`--api-port` when configured, otherwise `--public-port`).
 
 ```
-http://<server-host>:<api-port>/admin
+http://<server-host>:<api-port>/tubes
 ```
 
 Examples:
@@ -15,18 +15,18 @@ Examples:
 ```bash
 # Local development (shared port)
 tt serve --public-port 8080
-# → http://localhost:8080/admin
+# → http://localhost:8080/tubes
 
 # Separate API port
 tt serve --public-port 80 --api-port 9000
-# → http://localhost:9000/admin
+# → http://localhost:9000/tubes
 ```
 
 No login is required. Access should be restricted at the network or firewall level (see [Security](#security)).
 
 ---
 
-## Overview Page — `/admin`
+## Overview Page — `/tubes`
 
 Displays:
 
@@ -34,11 +34,11 @@ Displays:
 - **Server activity** — a rolling log of tunnel lifecycle events, delivery failures, and server-level errors (`server.error`) across all tunnels, updated in real time via SSE. Normal traffic events (`request.received`, `request.delivered`, `response.complete`, `ws.*`) are not shown here — visit the tunnel detail page to see per-tunnel traffic.
 - **Server configuration** — all active settings except sensitive values (`hmacSecret`, `hmacSecretFile`). Includes port, domain, reconnect window, max connections, HMAC status, etc.
 
-Clicking a tunnel ID navigates to its detail page. To monitor full request/response traffic for a specific tunnel in real time, use `/admin/:tunnelId`.
+Clicking a tunnel ID navigates to its detail page. To monitor full request/response traffic for a specific tunnel in real time, use `/tubes/:tunnelId`.
 
 ---
 
-## Tunnel Detail Page — `/admin/:tunnelId`
+## Tunnel Detail Page — `/tubes/:tunnelId`
 
 Displays a chronological log of every event for a single tunnel, with color coding:
 
@@ -53,7 +53,7 @@ Displays a chronological log of every event for a single tunnel, with color codi
 
 Each row shows timestamp, event type, and a summary of key fields (method, path, status, bytes, duration, reason).
 
-A **Disconnect** button at the top destroys the tunnel immediately (equivalent to `POST /admin/:tunnelId/disconnect`).
+A **Disconnect** button at the top destroys the tunnel immediately (equivalent to `POST /tubes/:tunnelId/disconnect`).
 
 ---
 
@@ -75,39 +75,39 @@ The dashboard is backed by two SSE endpoints you can also consume programmatical
 ### Global event stream
 
 ```
-GET /admin/events
+GET /tubes/events
 ```
 
 Sends a `server.state` event first (current config and tunnel list), then forwards tunnel lifecycle, failure, and server error events in real time. Filtered to: `tunnel.created`, `tunnel.connected`, `tunnel.disconnected`, `tunnel.reconnected`, `tunnel.window_expired`, `tunnel.destroyed`, `request.failed`, `response.aborted`, `ws.failed`, `server.error`.
 
-For the full unfiltered event stream of a specific tunnel, use `/admin/:tunnelId/events`.
+For the full unfiltered event stream of a specific tunnel, use `/tubes/:tunnelId/events`.
 
 ```bash
-curl -N http://localhost:9000/admin/events
+curl -N http://localhost:9000/tubes/events
 ```
 
 ### Per-tunnel event stream
 
 ```
-GET /admin/:tunnelId/events
+GET /tubes/:tunnelId/events
 ```
 
 Sends the full ring-buffer history (up to 500 events) immediately, then live events.
 
 ```bash
-curl -N http://localhost:9000/admin/bold-raven/events
+curl -N http://localhost:9000/tubes/bold-raven/events
 ```
 
 ### Disconnect a tunnel
 
 ```
-POST /admin/:tunnelId/disconnect
+POST /tubes/:tunnelId/disconnect
 ```
 
 Destroys the tunnel and closes all its TCP connections. The expose client will enter its reconnect window.
 
 ```bash
-curl -X POST http://localhost:9000/admin/bold-raven/disconnect
+curl -X POST http://localhost:9000/tubes/bold-raven/disconnect
 ```
 
 ---
@@ -249,7 +249,7 @@ tt serve \
   --api-port 9000 \
   --api-address 127.0.0.1
 
-# Dashboard: http://127.0.0.1:9000/admin
+# Dashboard: http://127.0.0.1:9000/tubes
 ```
 
 Request headers that arrive at the public port are logged with sensitive values redacted (`authorization`, `cookie`, `set-cookie`, `x-tt-auth`, `x-tt-session-token`, `x-hub-signature`, `x-hub-signature-256`, `x-api-key`, `x-amz-security-token`). Header names are preserved for diagnostics.

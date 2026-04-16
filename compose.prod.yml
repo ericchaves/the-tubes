@@ -138,6 +138,13 @@ services:
 
       - "traefik.http.services.tt-public-svc.loadbalancer.server.port=3000"
 
+      # ── Admin dashboard UI — entrypoint :8080, /tubes ───────────────────────
+      - "traefik.http.routers.tt-server-admin.rule=Host(`${TT_PUBLIC_DOMAIN:?TT_PUBLIC_DOMAIN is required}`) && PathPrefix(`/tubes`)"
+      - "traefik.http.routers.tt-server-admin.entrypoints=dashboard"
+      - "traefik.http.routers.tt-server-admin.tls=true"
+      - "traefik.http.routers.tt-server-admin.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.tt-server-admin.service=tt-admin-svc"
+
       # ── Shared middlewares ────────────────────────────────────────────────────
       - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
       - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"

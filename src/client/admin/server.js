@@ -11,11 +11,11 @@ const debug = createDebug('client:admin');
  * Create the expose-client admin HTTP server.
  *
  * Endpoints:
- *   GET /admin         → HTML dashboard
- *   GET /admin/events  → SSE stream
- *   GET /admin/status  → JSON state snapshot
- *   GET /admin/flows   → JSON list of discovered manifests
- *   POST /admin/replay → trigger a replay { manifest: "<name>" }
+ *   GET /tubes         → HTML dashboard
+ *   GET /tubes/events  → SSE stream
+ *   GET /tubes/status  → JSON state snapshot
+ *   GET /tubes/flows   → JSON list of discovered manifests
+ *   POST /tubes/replay → trigger a replay { manifest: "<name>" }
  *
  * @param {object} opts
  * @param {import('./event-log.js').ClientEventLog} opts.log
@@ -52,21 +52,21 @@ export function createAdminServer({ log, getState, filteredConfig, flowsDir, onR
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
 
-    // ── GET / — redirect to /admin ────────────────────────────────────────────
+    // ── GET / — redirect to /tubes ────────────────────────────────────────────
     if (req.method === 'GET' && url.pathname === '/') {
-      res.writeHead(302, { Location: '/admin' });
+      res.writeHead(302, { Location: '/tubes' });
       return res.end();
     }
 
-    // ── GET /admin — HTML page ─────────────────────────────────────────────────
-    if (req.method === 'GET' && url.pathname === '/admin') {
+    // ── GET /tubes — HTML page ─────────────────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/tubes') {
       const html = adminPage({ filteredConfig });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       return res.end(html);
     }
 
-    // ── GET /admin/events — SSE stream ─────────────────────────────────────────
-    if (req.method === 'GET' && url.pathname === '/admin/events') {
+    // ── GET /tubes/events — SSE stream ─────────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/tubes/events') {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -86,20 +86,20 @@ export function createAdminServer({ log, getState, filteredConfig, flowsDir, onR
       return;
     }
 
-    // ── GET /admin/status — JSON snapshot ─────────────────────────────────────
-    if (req.method === 'GET' && url.pathname === '/admin/status') {
+    // ── GET /tubes/status — JSON snapshot ─────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/tubes/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify(getState()));
     }
 
-    // ── GET /admin/flows — list manifests ─────────────────────────────────────
-    if (req.method === 'GET' && url.pathname === '/admin/flows') {
+    // ── GET /tubes/flows — list manifests ─────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/tubes/flows') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify(scanFlows()));
     }
 
-    // ── POST /admin/replay — trigger replay ───────────────────────────────────
-    if (req.method === 'POST' && url.pathname === '/admin/replay') {
+    // ── POST /tubes/replay — trigger replay ───────────────────────────────────
+    if (req.method === 'POST' && url.pathname === '/tubes/replay') {
       if (replayRunning) {
         res.writeHead(409, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ error: 'A replay is already running' }));

@@ -26,6 +26,7 @@ Metadata:
         Parameters:
           - PublicPort
           - AdminPort
+          - DashboardPort
           - SecureTraffic
           - PortRangeStart
           - PortRangeEnd
@@ -61,6 +62,8 @@ Metadata:
         default: "The Tubes Public Server Port"
       AdminPort:
         default: "Admin API Port"
+      DashboardPort:
+        default: "Admin Dashboard Port (Traefik + tt-server)"
       PortRangeStart:
         default: "Expose Client Port Range Start"
       PortRangeEnd:
@@ -127,7 +130,7 @@ Parameters:
 
   DockerImage:
     Type: String
-    Default: ghcr.io/ericchaves/the-tubes:v1.0.0
+    Default: ghcr.io/ericchaves/the-tubes:latest
     Description: Full Docker image reference for The Tubes server (e.g., ghcr.io/ericchaves/the-tubes:latest or ghcr.io/ericchaves/the-tubes:v1.2.3)
     AllowedPattern: ^[a-zA-Z0-9._/:@-]+$
     ConstraintDescription: Must be a valid Docker image reference (registry/image:tag)
@@ -145,6 +148,14 @@ Parameters:
     MinValue: 1024
     MaxValue: 65535
     Description: Port for Admin API - tunnel creation endpoint POST /api/tunnels (restricted by Security Group)
+    ConstraintDescription: Must be a valid port number between 1024-65535
+
+  DashboardPort:
+    Type: Number
+    Default: 9443
+    MinValue: 1024
+    MaxValue: 65535
+    Description: "Port for admin dashboards with HTTPS: Traefik at /dashboard and tt-server admin at /tubes (restricted by Security Group)"
     ConstraintDescription: Must be a valid port number between 1024-65535
 
   PortRangeStart:
@@ -304,10 +315,10 @@ Resources:
     Properties:
       GroupId: !Ref TheTubesClientSecurityGroup
       IpProtocol: tcp
-      FromPort: 8080
-      ToPort: 8080
+      FromPort: !Ref DashboardPort
+      ToPort: !Ref DashboardPort
       CidrIp: 127.0.0.1/32
-      Description: Traefik dashboard port 8080 (HTTP in staging via IP, HTTPS in production via domain) - Update this IP manually
+      Description: Admin dashboards port (Traefik /dashboard and tt-server /tubes via HTTPS) - Update this IP manually
 
   AdminApiIngress:
     Type: AWS::EC2::SecurityGroupIngress
@@ -402,7 +413,6 @@ Resources:
           set +e
           CUSTOM_DOMAIN="${ServiceName}.${DomainName}"
           [ "${LetsEncryptEnvironment}" = "production" ] && ACME_SERVER="https://acme-v02.api.letsencrypt.org/directory" || ACME_SERVER="https://acme-staging-v02.api.letsencrypt.org/directory"
-          [ "${LetsEncryptEnvironment}" = "production" ] && API_INSECURE=false || API_INSECURE=true
 
           # Create docker-compose.yml
           mkdir -p /opt/the-tubes && cd /opt/the-tubes
@@ -415,11 +425,10 @@ Resources:
               networks:
                 - tt_net
               command:
-                - "--api.insecure=API_INSECURE_PLACEHOLDER"
                 - "--api.dashboard=true"
                 - "--entrypoints.web.address=:80"
                 - "--entrypoints.websecure.address=:443"
-                # ENTRYPOINT_DASHBOARD_PLACEHOLDER
+                - "--entrypoints.dashboard.address=:${DashboardPort}"
                 - "--entrypoints.admin.address=:${AdminPort}"
                 - "--certificatesresolvers.letsencrypt.acme.email=${AdminEmail}"
                 - "--certificatesresolvers.letsencrypt.acme.storage=/etc/traefik/acme.json"
@@ -434,7 +443,7 @@ Resources:
               ports:
                 - "80:80"
                 - "443:443"
-                - "8080:8080"
+                - "${DashboardPort}:${DashboardPort}"
                 - "${AdminPort}:${AdminPort}"
               volumes:
                 - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -445,7 +454,10 @@ Resources:
                 - AWS_SDK_LOAD_CONFIG=true
               labels:
                 - "traefik.enable=true"
-                # DASHBOARD_LABELS_PLACEHOLDER
+                - "traefik.http.routers.traefik-dashboard.rule=Host(`DOMAIN_PLACEHOLDER`) && (PathPrefix(`/dashboard`) || PathPrefix(`/api`))"
+                - "traefik.http.routers.traefik-dashboard.entrypoints=dashboard"
+                - "traefik.http.routers.traefik-dashboard.service=api@internal"
+                # DASHBOARD_TLS_PLACEHOLDER
             the-tubes:
               image: ${DockerImage}
               container_name: the-tubes-server
@@ -483,7 +495,8 @@ Resources:
               labels:
                 - "traefik.enable=true"
                 # Admin API (port ${AdminPort}) - tunnel creation endpoint
-                - "traefik.http.routers.tt-admin.rule=Host(`DOMAIN_PLACEHOLDER`)"
+                # Rule accepts both domain name and direct IP access (security enforced by Security Group)
+                - "traefik.http.routers.tt-admin.rule=Host(`DOMAIN_PLACEHOLDER`) || PathPrefix(`/`)"
                 - "traefik.http.routers.tt-admin.entrypoints=admin"
                 - "traefik.http.routers.tt-admin.service=tt-admin-svc"
                 - "traefik.http.services.tt-admin-svc.loadbalancer.server.port=${AdminPort}"
@@ -495,6 +508,11 @@ Resources:
                 - "traefik.http.services.tt-public-svc.loadbalancer.server.port=${PublicPort}"
                 # HTTPS labels placeholder
                 - "# HTTPS_LABELS_PLACEHOLDER"
+                # tt-server admin UI on dashboard port
+                - "traefik.http.routers.tt-server-admin.rule=Host(`DOMAIN_PLACEHOLDER`) && PathPrefix(`/tubes`)"
+                - "traefik.http.routers.tt-server-admin.entrypoints=dashboard"
+                - "traefik.http.routers.tt-server-admin.service=tt-admin-svc"
+                # SERVER_ADMIN_TLS_PLACEHOLDER
           networks:
             tt_net:
               name: tt_net
@@ -502,26 +520,18 @@ Resources:
             traefik-data:
           COMPOSE_EOF
 
-          # Configure Traefik Dashboard based on LetsEncryptEnvironment
-          if [ "${LetsEncryptEnvironment}" = "production" ]; then
-            # Production: dedicated :8080 entrypoint with TLS
-            sed -i '/# ENTRYPOINT_DASHBOARD_PLACEHOLDER/c\      - "--entrypoints.dashboard.address=:8080"' docker-compose.yml
-            sed -i '/# DASHBOARD_LABELS_PLACEHOLDER/c\      - "traefik.http.routers.traefik-dashboard.rule=PathPrefix(`/dashboard`) || PathPrefix(`/api`)"\n      - "traefik.http.routers.traefik-dashboard.entrypoints=dashboard"\n      - "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"\n      - "traefik.http.routers.traefik-dashboard.service=api@internal"' docker-compose.yml
-          else
-            # Staging: api.insecure exposes dashboard on :8080 via HTTP, no extra entrypoint needed
-            sed -i '/# ENTRYPOINT_DASHBOARD_PLACEHOLDER/d' docker-compose.yml
-            sed -i '/# DASHBOARD_LABELS_PLACEHOLDER/d' docker-compose.yml
-          fi
-
           # Conditionally add HTTPS Traefik labels if SecureTraffic is enabled
           if [ "${SecureTraffic}" = "true" ]; then
             sed -i '/# HTTPS_LABELS_PLACEHOLDER/c\      - "traefik.http.routers.tt-admin.tls.certresolver=letsencrypt"\n      - "traefik.http.routers.tt-admin.tls=true"\n      - "traefik.http.routers.tt-public-http.middlewares=https-redirect"\n      - "traefik.http.routers.tt-public.rule=HostRegexp(`^[a-zA-Z0-9-]+[.]DOMAIN_PLACEHOLDER$`)"\n      - "traefik.http.routers.tt-public.entrypoints=websecure"\n      - "traefik.http.routers.tt-public.service=tt-public-svc"\n      - "traefik.http.routers.tt-public.tls=true"\n      - "traefik.http.routers.tt-public.tls.certresolver=letsencrypt"\n      - "traefik.http.routers.tt-public.tls.domains[0].main=DOMAIN_PLACEHOLDER"\n      - "traefik.http.routers.tt-public.tls.domains[0].sans=*.DOMAIN_PLACEHOLDER"\n      - "traefik.http.routers.tt-public.priority=10"\n      - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"\n      - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"' docker-compose.yml
+            sed -i '/# DASHBOARD_TLS_PLACEHOLDER/c\      - "traefik.http.routers.traefik-dashboard.tls=true"\n      - "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"' docker-compose.yml
+            sed -i '/# SERVER_ADMIN_TLS_PLACEHOLDER/c\      - "traefik.http.routers.tt-server-admin.tls=true"\n      - "traefik.http.routers.tt-server-admin.tls.certresolver=letsencrypt"' docker-compose.yml
           else
             sed -i '/# HTTPS_LABELS_PLACEHOLDER/d' docker-compose.yml
+            sed -i '/# DASHBOARD_TLS_PLACEHOLDER/d' docker-compose.yml
+            sed -i '/# SERVER_ADMIN_TLS_PLACEHOLDER/d' docker-compose.yml
           fi
 
           # Replace runtime placeholders with actual values
-          sed -i "s/API_INSECURE_PLACEHOLDER/$API_INSECURE/g" docker-compose.yml
           sed -i "s|ACME_SERVER_PLACEHOLDER|$ACME_SERVER|g" docker-compose.yml
           sed -i "s/DOMAIN_PLACEHOLDER/$CUSTOM_DOMAIN/g" docker-compose.yml
 
@@ -533,9 +543,9 @@ Resources:
 
           # Signal CloudFormation
           if docker ps | grep -q "traefik" && docker ps | grep -q "the-tubes-server"; then
-            /usr/local/bin/cfn-signal -e 0 --stack ${AWS::StackName} --resource TheTubesInstance --region ${AWS::Region}
+            /usr/bin/cfn-signal -e 0 --stack ${AWS::StackName} --resource TheTubesInstance --region ${AWS::Region}
           else
-            /usr/local/bin/cfn-signal -e 1 --stack ${AWS::StackName} --resource TheTubesInstance --region ${AWS::Region}
+            /usr/bin/cfn-signal -e 1 --stack ${AWS::StackName} --resource TheTubesInstance --region ${AWS::Region}
             exit 1
           fi
 
@@ -616,19 +626,28 @@ Outputs:
   TraefikDashboard:
     Description: Traefik Dashboard URL (restricted by Security Group)
     Value: !If
-      - LetsEncryptEnvironmentIsProduction
-      - !Sub 'https://${ServiceName}.${DomainName}:8080/dashboard/'
-      - 'Access via EC2 IP: http://<EC2-IP>:8080/dashboard/ (see TraefikDashboardNote for actual IP)'
+      - IsSecureTraffic
+      - !Sub 'https://${ServiceName}.${DomainName}:${DashboardPort}/dashboard/'
+      - !Sub 'http://${ServiceName}.${DomainName}:${DashboardPort}/dashboard/'
     Export:
       Name: !Sub '${AWS::StackName}-TraefikDashboard'
 
+  TheTubesServerAdminUrl:
+    Description: tt-server admin dashboard URL (restricted by Security Group)
+    Value: !If
+      - IsSecureTraffic
+      - !Sub 'https://${ServiceName}.${DomainName}:${DashboardPort}/tubes'
+      - !Sub 'http://${ServiceName}.${DomainName}:${DashboardPort}/tubes'
+    Export:
+      Name: !Sub '${AWS::StackName}-TheTubesServerAdminUrl'
+
   TraefikDashboardNote:
     Condition: ShouldCreateInstance
-    Description: Dashboard access instructions based on SSL environment
+    Description: Dashboard access instructions
     Value: !If
-      - LetsEncryptEnvironmentIsProduction
-      - !Sub 'Dashboard accessible via domain with HTTPS: https://${ServiceName}.${DomainName}:8080/dashboard/'
-      - !Sub 'Dashboard accessible via IP only (HTTP): http://${TheTubesInstance.PublicIp}:8080/dashboard/ - .dev domains enforce HTTPS, use IP for staging'
+      - IsSecureTraffic
+      - !Sub 'Traefik dashboard: https://${ServiceName}.${DomainName}:${DashboardPort}/dashboard/ | tt-server admin: https://${ServiceName}.${DomainName}:${DashboardPort}/tubes'
+      - !Sub 'Traefik dashboard: http://${TheTubesInstance.PublicIp}:${DashboardPort}/dashboard/ | tt-server admin: http://${TheTubesInstance.PublicIp}:${DashboardPort}/tubes'
     Export:
       Name: !Sub '${AWS::StackName}-TraefikDashboardNote'
 
@@ -652,10 +671,7 @@ Outputs:
 
   SecurityNote:
     Description: Security configuration details
-    Value: !If
-      - LetsEncryptEnvironmentIsProduction
-      - !Sub 'Ports 8080 (Traefik dashboard HTTPS), ${AdminPort} (admin API) and ${PortRangeStart}-${PortRangeEnd} (expose client TCP) are initially restricted to 127.0.0.1/32. Update Security Group "${AWS::StackName}-tt-client-sg" manually to allow your IPs. Ports 80/443 are open for wildcard tunnel subdomains only.'
-      - !Sub 'Ports 8080 (Traefik dashboard HTTP via IP only), ${AdminPort} (admin API) and ${PortRangeStart}-${PortRangeEnd} (expose client TCP) are initially restricted to 127.0.0.1/32. Update Security Group "${AWS::StackName}-tt-client-sg" manually to allow your IPs. Ports 80/443 are open for wildcard tunnel subdomains only. Dashboard must be accessed via EC2 IP in staging.'
+    Value: !Sub 'Port ${DashboardPort} (Traefik /dashboard and tt-server /tubes), ${AdminPort} (admin API) and ${PortRangeStart}-${PortRangeEnd} (expose client TCP) are initially restricted to 127.0.0.1/32. Update Security Group "${AWS::StackName}-tt-client-sg" manually to allow your IPs. Ports 80/443 are open for wildcard tunnel subdomains only.'
     Export:
       Name: !Sub '${AWS::StackName}-SecurityNote'
 
@@ -674,9 +690,9 @@ Outputs:
   SSLInfo:
     Description: SSL Certificate Information
     Value: !If
-      - LetsEncryptEnvironmentIsProduction
-      - 'Wildcard SSL enabled via DNS-01 challenge for public tunnel subdomains, admin API, and dashboard (all HTTPS)'
-      - 'Wildcard SSL enabled via DNS-01 challenge for public tunnel subdomains and admin API (dashboard uses HTTP via IP only in staging)'
+      - IsSecureTraffic
+      - 'Wildcard SSL enabled via DNS-01 challenge for public tunnel subdomains, admin API, and admin dashboards (all HTTPS)'
+      - 'SSL disabled - all traffic is plain HTTP'
     Export:
       Name: !Sub '${AWS::StackName}-SSLInfo'
 

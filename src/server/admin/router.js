@@ -20,11 +20,11 @@ function filterConfig(config) {
  * Handle requests rooted at /admin.
  *
  * Routes:
- *   GET  /admin                    → overview HTML page
- *   GET  /admin/events             → SSE — global event stream (server.state first)
- *   GET  /admin/:tunnelId          → per-tunnel HTML page
- *   GET  /admin/:tunnelId/events   → SSE — per-tunnel event stream (history first)
- *   POST /admin/:tunnelId/disconnect → destroy the tunnel
+ *   GET  /tubes                    → overview HTML page
+ *   GET  /tubes/events             → SSE — global event stream (server.state first)
+ *   GET  /tubes/:tunnelId          → per-tunnel HTML page
+ *   GET  /tubes/:tunnelId/events   → SSE — per-tunnel event stream (history first)
+ *   POST /tubes/:tunnelId/disconnect → destroy the tunnel
  *
  * @param {import('node:http').IncomingMessage} req
  * @param {import('node:http').ServerResponse} res
@@ -40,15 +40,15 @@ export function handleAdminRoute(req, res, services) {
   const path = url.pathname;
   const method = req.method.toUpperCase();
 
-  // ── GET /admin ──────────────────────────────────────────────────────────────
-  if (method === 'GET' && path === '/admin') {
+  // ── GET /tubes ──────────────────────────────────────────────────────────────
+  if (method === 'GET' && path === '/tubes') {
     const html = adminIndexPage(filterConfig(serverConfig));
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(html);
   }
 
-  // ── GET /admin/events ───────────────────────────────────────────────────────
-  if (method === 'GET' && path === '/admin/events') {
+  // ── GET /tubes/events ───────────────────────────────────────────────────────
+  if (method === 'GET' && path === '/tubes/events') {
     startSse(res);
     // Send current server state as the first event so the page can initialize
     sseWrite(res, {
@@ -63,7 +63,7 @@ export function handleAdminRoute(req, res, services) {
   }
 
   // ── Routes with :tunnelId ───────────────────────────────────────────────────
-  const tunnelIdMatch = path.match(/^\/admin\/([^/]+?)(?:\/(events|disconnect))?$/);
+  const tunnelIdMatch = path.match(/^\/tubes\/([^/]+?)(?:\/(events|disconnect))?$/);
   if (!tunnelIdMatch) {
     return send404(res);
   }
@@ -71,7 +71,7 @@ export function handleAdminRoute(req, res, services) {
   const tunnelId = tunnelIdMatch[1];
   const action = tunnelIdMatch[2]; // 'events' | 'disconnect' | undefined
 
-  // GET /admin/:tunnelId/events
+  // GET /tubes/:tunnelId/events
   if (method === 'GET' && action === 'events') {
     startSse(res);
     const eventLog = manager.getEventLog(tunnelId);
@@ -85,7 +85,7 @@ export function handleAdminRoute(req, res, services) {
     return;
   }
 
-  // POST /admin/:tunnelId/disconnect
+  // POST /tubes/:tunnelId/disconnect
   if (method === 'POST' && action === 'disconnect') {
     const tunnel = manager.getTunnelSafe(tunnelId);
     if (!tunnel) {
@@ -98,7 +98,7 @@ export function handleAdminRoute(req, res, services) {
     return res.end(JSON.stringify({ ok: true, tunnelId }));
   }
 
-  // GET /admin/:tunnelId
+  // GET /tubes/:tunnelId
   if (method === 'GET' && !action) {
     const html = adminTunnelPage(tunnelId);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });

@@ -189,7 +189,7 @@ function isAdminPath(url) {
     url.startsWith('/api/') ||
     url === '/api' ||
     url === '/healthz' ||
-    url === '/admin' ||
-    url.startsWith('/admin/')
+    url === '/tubes' ||
+    url.startsWith('/tubes/')
   );
 }
