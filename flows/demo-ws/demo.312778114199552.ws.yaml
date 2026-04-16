@@ -1,0 +1,36 @@
+captureId: "312778114199552"
+tunnelId: demo
+timestamp: 2026-04-16T17:50:44.287Z
+websocket:
+  path: /echo
+  headers:
+    host: demo.tt.localhost:8080
+    upgrade: websocket
+    connection: Upgrade
+    sec-websocket-key: er/H9IMcsGxI/BhOzANVSg==
+    sec-websocket-version: "13"
+  frames:
+    - dir: client
+      opcode: 1
+      encoding: utf8
+      data: ping from replay
+    - dir: client
+      opcode: 1
+      encoding: utf8
+      data: websocket works!
+    - dir: client
+      opcode: 8
+      encoding: utf8
+      data: �
+    - dir: server
+      opcode: 1
+      encoding: utf8
+      data: ping from replay
+    - dir: server
+      opcode: 1
+      encoding: utf8
+      data: websocket works!
+    - dir: server
+      opcode: 8
+      encoding: utf8
+      data: �

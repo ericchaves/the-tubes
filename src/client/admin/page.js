@@ -369,7 +369,7 @@ function updateFlowStep(stepIndex, total){
 function triggerReplay(name){
   if(replayRunning) return;
   setFlowRunning();
-  fetch('/replay', {
+  fetch('/admin/replay', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ manifest: name }),
@@ -499,7 +499,7 @@ document.querySelectorAll('section h2.collapsible-trigger').forEach(h2 => {
 (function connectSse(){
   let es;
   function connect(){
-    es = new EventSource('/events');
+    es = new EventSource('/admin/events');
     es.onopen = () => { sseDot.className = 'sse-dot ok'; };
     es.onmessage = (e) => { try { handleEvent(JSON.parse(e.data)); } catch {} };
     es.onerror = () => {

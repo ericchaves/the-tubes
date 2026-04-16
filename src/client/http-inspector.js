@@ -99,6 +99,35 @@ export class HttpInspector {
   }
 
   /**
+   * Save a captured WebSocket exchange.
+   *
+   * @param {object} data
+   * @param {string} data.path - request path (e.g. /echo)
+   * @param {Record<string, string>} data.reqHeaders - HTTP upgrade request headers
+   * @param {Array} data.frames - parsed frames with dir/opcode/encoding/data fields
+   * @returns {string} captureId
+   */
+  captureWebSocket({ path, reqHeaders, frames }) {
+    const captureId = generateCaptureId();
+
+    const doc = {
+      captureId,
+      tunnelId: this._tunnelId,
+      timestamp: new Date().toISOString(),
+      websocket: {
+        path,
+        headers: _flattenHeaders(reqHeaders),
+        frames,
+      },
+    };
+
+    const filename = `${this._tunnelId}.${captureId}.ws.yaml`;
+    writeFileSync(join(this._dir, filename), stringify(doc));
+    debug('captured websocket (id=%s, path=%s, frames=%d)', captureId, path, frames.length);
+    return captureId;
+  }
+
+  /**
    * Decompress and encode body for storage.
    * @returns {{ encoding: 'utf8'|'base64'|'file', data?: string, file?: string, truncated?: boolean }}
    */

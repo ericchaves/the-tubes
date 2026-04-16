@@ -17,6 +17,7 @@ import { createServer as createTcpServer } from 'node:net';
 import { FailureTracker } from '../../src/client/failure-tracker.js';
 import { ReconnectPolicy } from '../../src/client/reconnect-policy.js';
 import { TunnelCluster } from '../../src/client/tunnel-cluster.js';
+import { waitFor } from '../helpers/wait-for.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

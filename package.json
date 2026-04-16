@@ -12,10 +12,12 @@
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "start": "node bin/tt.js",
-    "test": "node --test 'test/**/*.test.js'",
+    "test": "node --test 'test/unit/**/*.test.js' 'test/integration/**/*.test.js'",
     "test:unit": "node --test 'test/unit/**/*.test.js'",
     "test:integration": "node --test 'test/integration/**/*.test.js'",
-    "test:e2e": "node --test 'test/e2e/**/*.test.js'"
+    "test:regression": "node --test 'test/regression/**/*.test.js'",
+    "test:e2e": "node --test 'test/e2e/**/*.test.js'",
+    "test:all": "node --test 'test/unit/**/*.test.js' 'test/integration/**/*.test.js' 'test/regression/**/*.test.js' 'test/e2e/**/*.test.js'"
   },
   "license": "MIT"
 }

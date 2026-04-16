@@ -11,11 +11,11 @@ const debug = createDebug('client:admin');
  * Create the expose-client admin HTTP server.
  *
  * Endpoints:
- *   GET /         → HTML dashboard
- *   GET /events   → SSE stream
- *   GET /status   → JSON state snapshot
- *   GET /flows    → JSON list of discovered manifests
- *   POST /replay  → trigger a replay { manifest: "<name>" }
+ *   GET /admin         → HTML dashboard
+ *   GET /admin/events  → SSE stream
+ *   GET /admin/status  → JSON state snapshot
+ *   GET /admin/flows   → JSON list of discovered manifests
+ *   POST /admin/replay → trigger a replay { manifest: "<name>" }
  *
  * @param {object} opts
  * @param {import('./event-log.js').ClientEventLog} opts.log
@@ -52,15 +52,21 @@ export function createAdminServer({ log, getState, filteredConfig, flowsDir, onR
   const server = createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
 
-    // ── GET / — HTML page ──────────────────────────────────────────────────────
+    // ── GET / — redirect to /admin ────────────────────────────────────────────
     if (req.method === 'GET' && url.pathname === '/') {
+      res.writeHead(302, { Location: '/admin' });
+      return res.end();
+    }
+
+    // ── GET /admin — HTML page ─────────────────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/admin') {
       const html = adminPage({ filteredConfig });
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
       return res.end(html);
     }
 
-    // ── GET /events — SSE stream ───────────────────────────────────────────────
-    if (req.method === 'GET' && url.pathname === '/events') {
+    // ── GET /admin/events — SSE stream ─────────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/admin/events') {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -80,20 +86,20 @@ export function createAdminServer({ log, getState, filteredConfig, flowsDir, onR
       return;
     }
 
-    // ── GET /status — JSON snapshot ────────────────────────────────────────────
-    if (req.method === 'GET' && url.pathname === '/status') {
+    // ── GET /admin/status — JSON snapshot ─────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/admin/status') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify(getState()));
     }
 
-    // ── GET /flows — list manifests ────────────────────────────────────────────
-    if (req.method === 'GET' && url.pathname === '/flows') {
+    // ── GET /admin/flows — list manifests ─────────────────────────────────────
+    if (req.method === 'GET' && url.pathname === '/admin/flows') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify(scanFlows()));
     }
 
-    // ── POST /replay — trigger replay ──────────────────────────────────────────
-    if (req.method === 'POST' && url.pathname === '/replay') {
+    // ── POST /admin/replay — trigger replay ───────────────────────────────────
+    if (req.method === 'POST' && url.pathname === '/admin/replay') {
       if (replayRunning) {
         res.writeHead(409, { 'Content-Type': 'application/json' });
         return res.end(JSON.stringify({ error: 'A replay is already running' }));

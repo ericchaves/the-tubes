@@ -46,6 +46,35 @@ export function loadManifest(manifestPath) {
 }
 
 /**
+ * Load a WebSocket capture file (.ws.yaml).
+ *
+ * @param {string} captureFile - absolute path
+ * @returns {{ path: string, headers: object, frames: Array }} websocket capture data
+ */
+export function loadCaptureWs(captureFile) {
+  if (!existsSync(captureFile)) {
+    throw new ConfigError(`Capture file not found: ${captureFile}`);
+  }
+
+  let doc;
+  try {
+    doc = parse(readFileSync(captureFile, 'utf8'));
+  } catch (err) {
+    throw new ConfigError(`Failed to parse capture file "${captureFile}": ${err.message}`);
+  }
+
+  const ws = doc.websocket;
+  if (!ws) {
+    throw new ConfigError(`Capture file "${captureFile}" is not a WebSocket capture (missing websocket key)`);
+  }
+  if (!ws.path) {
+    throw new ConfigError(`Capture file "${captureFile}" missing websocket.path`);
+  }
+
+  return ws;
+}
+
+/**
  * Load and validate a capture request file.
  *
  * @param {string} captureFile - absolute path

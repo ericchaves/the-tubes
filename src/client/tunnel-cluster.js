@@ -87,6 +87,10 @@ export class TunnelCluster extends EventEmitter {
       });
 
       remote.once('close', () => {
+        // Ensure local closes too so local.once('close') fires for capture.
+        // This matters for WebSocket sessions where handleUpgrade uses socket.destroy(),
+        // which doesn't emit 'end' — the pipe never propagates to local.end().
+        if (pair.local && !pair.local.destroyed) pair.local.destroy();
         emitDead('remote-closed', 'remoteDrop', true);
       });
 
@@ -186,6 +190,41 @@ export class TunnelCluster extends EventEmitter {
         bytesTransferred += chunk.length;
         if (resTotal < maxCollect) { resBufs.push(chunk); resTotal += chunk.length; }
       });
+
+      // WebSocket capture: fire when remote receives EOF (server gracefully closed its side).
+      // local.once('close') may not fire during WS sessions due to half-open socket behavior,
+      // so we capture here instead. For HTTP sessions, reqBufs won't contain an upgrade header.
+      remote.once('end', () => {
+        const reqMsg = _parseHttpMsg(Buffer.concat(reqBufs));
+        if (!reqMsg) return;
+        const isWebSocket = reqMsg.headers['upgrade']?.toLowerCase() === 'websocket';
+        if (!isWebSocket) return;
+
+        const parts = reqMsg.firstLine.split(' ');
+        const path = parts[1];
+        this.emit('request', { method: 'WS', path, status: 101 });
+
+        if (this._inspector && path) {
+          const resMsg = _parseHttpMsg(Buffer.concat(resBufs));
+          const clientFrames = _parseWsFrames(reqMsg.body, true);
+          const serverFrames = resMsg ? _parseWsFrames(resMsg.body, false) : [];
+
+          const captureId = this._inspector.captureWebSocket({
+            path,
+            reqHeaders: reqMsg.headers,
+            frames: [...clientFrames, ...serverFrames],
+          });
+          this.emit('capture', {
+            captureId,
+            file: `${info.tunnelId}.${captureId}.ws.yaml`,
+            method: 'WS',
+            path,
+          });
+        }
+
+        // Prevent duplicate capture in local.once('close')
+        reqBufs.length = 0;
+      });
     });
 
     local.once('close', (hadError) => {
@@ -202,26 +241,51 @@ export class TunnelCluster extends EventEmitter {
         const parts = reqMsg.firstLine.split(' ');
         const method = parts[0];
         const path = parts[1];
-        const resMsg = _parseHttpMsg(Buffer.concat(resBufs));
-        const status = resMsg ? parseInt(resMsg.firstLine.split(' ')[1], 10) : null;
+        const isWebSocket = reqMsg.headers['upgrade']?.toLowerCase() === 'websocket';
 
-        this.emit('request', { method, path, status });
+        if (isWebSocket) {
+          this.emit('request', { method: 'WS', path, status: 101 });
 
-        if (this._inspector && method && path) {
-          const captureId = this._inspector.captureRequest({
-            method, path, headers: reqMsg.headers, body: reqMsg.body,
-          });
-          if (resMsg) {
-            this._inspector.captureResponse({
-              status, headers: resMsg.headers, body: resMsg.body,
-            }, captureId);
+          if (this._inspector && path) {
+            const resMsg = _parseHttpMsg(Buffer.concat(resBufs));
+            const clientFrames = _parseWsFrames(reqMsg.body, true);
+            const serverFrames = resMsg ? _parseWsFrames(resMsg.body, false) : [];
+            const frames = [...clientFrames, ...serverFrames];
+
+            const captureId = this._inspector.captureWebSocket({
+              path,
+              reqHeaders: reqMsg.headers,
+              frames,
+            });
+            this.emit('capture', {
+              captureId,
+              file: `${info.tunnelId}.${captureId}.ws.yaml`,
+              method: 'WS',
+              path,
+            });
           }
-          this.emit('capture', {
-            captureId,
-            file: `${info.tunnelId}.${captureId}.req.yaml`,
-            method,
-            path,
-          });
+        } else {
+          const resMsg = _parseHttpMsg(Buffer.concat(resBufs));
+          const status = resMsg ? parseInt(resMsg.firstLine.split(' ')[1], 10) : null;
+
+          this.emit('request', { method, path, status });
+
+          if (this._inspector && method && path) {
+            const captureId = this._inspector.captureRequest({
+              method, path, headers: reqMsg.headers, body: reqMsg.body,
+            });
+            if (resMsg) {
+              this._inspector.captureResponse({
+                status, headers: resMsg.headers, body: resMsg.body,
+              }, captureId);
+            }
+            this.emit('capture', {
+              captureId,
+              file: `${info.tunnelId}.${captureId}.req.yaml`,
+              method,
+              path,
+            });
+          }
         }
       }
 
@@ -251,6 +315,73 @@ export class TunnelCluster extends EventEmitter {
 }
 
 /**
+ * Parse RFC 6455 WebSocket frames from a raw buffer.
+ * Returns an array of frame objects suitable for YAML capture.
+ * @param {Buffer} buf - raw bytes after the HTTP upgrade body
+ * @param {boolean} isClient - true for client→server (masked), false for server→client
+ * @returns {Array<{dir:string, opcode:number, encoding:string, data:string}>}
+ */
+function _parseWsFrames(buf, isClient) {
+  const frames = [];
+  let offset = 0;
+
+  while (offset + 2 <= buf.length) {
+    const byte0 = buf[offset];
+    const byte1 = buf[offset + 1];
+    offset += 2;
+
+    const opcode = byte0 & 0x0F;
+    const masked = (byte1 & 0x80) !== 0;
+    let payloadLen = byte1 & 0x7F;
+
+    if (payloadLen === 126) {
+      if (offset + 2 > buf.length) break;
+      payloadLen = buf.readUInt16BE(offset);
+      offset += 2;
+    } else if (payloadLen === 127) {
+      if (offset + 8 > buf.length) break;
+      payloadLen = Number(buf.readBigUInt64BE(offset));
+      offset += 8;
+    }
+
+    let maskKey = null;
+    if (masked) {
+      if (offset + 4 > buf.length) break;
+      maskKey = buf.slice(offset, offset + 4);
+      offset += 4;
+    }
+
+    if (offset + payloadLen > buf.length) break;
+    let payload = buf.slice(offset, offset + payloadLen);
+    offset += payloadLen;
+
+    if (masked && maskKey) {
+      const unmasked = Buffer.allocUnsafe(payloadLen);
+      for (let i = 0; i < payloadLen; i++) {
+        unmasked[i] = payload[i] ^ maskKey[i % 4];
+      }
+      payload = unmasked;
+    }
+
+    // Skip continuation (0) and connection-level control we can't replay
+    if (opcode === 0) continue;
+
+    const dir = isClient ? 'client' : 'server';
+    const text = payload.toString('utf8');
+    const isBinary = opcode === 2 || _hasBinaryChars(text);
+
+    frames.push({
+      dir,
+      opcode,
+      encoding: isBinary ? 'base64' : 'utf8',
+      data: isBinary ? payload.toString('base64') : text,
+    });
+  }
+
+  return frames;
+}
+
+/**
  * Parse a raw HTTP message buffer into its first line, headers, and body.
  * Returns null if the header section is not yet complete.
  * @param {Buffer} buf
@@ -267,4 +398,11 @@ function _parseHttpMsg(buf) {
     headers[lines[i].slice(0, colon).trim().toLowerCase()] = lines[i].slice(colon + 1).trim();
   }
   return { firstLine: lines[0], headers, body: buf.slice(sep + 4) };
+}
+
+function _hasBinaryChars(str) {
+  for (let i = 0; i < Math.min(str.length, 512); i++) {
+    if (str.charCodeAt(i) === 0) return true;
+  }
+  return false;
 }

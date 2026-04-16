@@ -2,7 +2,9 @@ import { resolve } from 'node:path';
 import { styleText } from 'node:util';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { loadCaptureRequest } from './manifest.js';
+import { connect as netConnect } from 'node:net';
+import { randomBytes } from 'node:crypto';
+import { loadCaptureRequest, loadCaptureWs } from './manifest.js';
 import { createDebug } from '../debug.js';
 
 const debug = createDebug('replay');
@@ -44,79 +46,129 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
     if (loop > 1) console.log(`\n── Loop ${loopIdx + 1}/${loop} ──`);
 
     for (const [stepIdx, step] of manifest.steps.entries()) {
+      const total = manifest.steps.length;
+      const isWs = step.type === 'ws';
       const capturePath = resolve(manifestDir, step.capture ?? step.request);
-      let reqData;
-      try {
-        reqData = loadCaptureRequest(capturePath);
-      } catch (err) {
-        console.error(styleText('red', `  [${stepIdx + 1}] Error: ${err.message}`));
-        continue;
-      }
 
-      // Build headers — optionally strip Host
-      const headers = {};
-      for (const [k, v] of Object.entries(reqData.headers ?? {})) {
-        if (k.toLowerCase() === 'host' && !sendHostHeader) continue;
-        headers[k] = Array.isArray(v) ? v[0] : String(v);
-      }
+      if (isWs) {
+        // ── WebSocket step ──────────────────────────────────────────────────
+        let wsData;
+        try {
+          wsData = loadCaptureWs(capturePath);
+        } catch (err) {
+          console.error(styleText('red', `  [${stepIdx + 1}] Error: ${err.message}`));
+          onStep?.({ stepIdx, total, method: 'WS', url: capturePath, status: null, durationMs: 0, error: err.message });
+          continue;
+        }
 
-      // Apply step overrides
-      if (step.overrides?.headers) {
-        Object.assign(headers, step.overrides.headers);
-      }
+        // Build WS URL: convert http(s) target to ws(s), then append captured path
+        const baseWs = target.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:').replace(/\/$/, '');
+        const finalUrl = `${baseWs}${wsData.path}`;
 
-      // Build body
-      let body;
-      const bodyEncoding = reqData.bodyEncoding ?? 'utf8';
-      if (reqData.body || reqData.body === '') {
-        const rawBody = String(reqData.body);
-        if (bodyEncoding === 'base64') {
-          body = Buffer.from(rawBody, 'base64');
+        // Build headers — optionally strip Host
+        const headers = {};
+        for (const [k, v] of Object.entries(wsData.headers ?? {})) {
+          if (k.toLowerCase() === 'host' && !sendHostHeader) continue;
+          // Strip WebSocket handshake headers (we generate fresh ones)
+          const kl = k.toLowerCase();
+          if (['upgrade', 'connection', 'sec-websocket-key', 'sec-websocket-version',
+               'sec-websocket-extensions', 'sec-websocket-protocol'].includes(kl)) continue;
+          headers[k] = Array.isArray(v) ? v[0] : String(v);
+        }
+        if (step.overrides?.headers) Object.assign(headers, step.overrides.headers);
+
+        if (dryRun) {
+          const clientCount = (wsData.frames ?? []).filter(f => f.dir === 'client').length;
+          console.log(`  [${stepIdx + 1}] DRY WS → ${finalUrl} (${clientCount} frames)`);
         } else {
-          // Normalize JSON bodies
-          const trimmed = rawBody.trim();
-          if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-            try {
-              body = JSON.stringify(JSON.parse(trimmed));
-            } catch {
-              body = rawBody;
-            }
-          } else {
-            body = rawBody;
+          process.stdout.write(`  [${stepIdx + 1}] WS ${finalUrl} ... `);
+          const t0 = Date.now();
+          try {
+            await wsSend(finalUrl, wsData.frames ?? [], headers);
+            const durationMs = Date.now() - t0;
+            console.log(styleText('green', '101'));
+            debug('step %d → ws 101', stepIdx + 1);
+            onStep?.({ stepIdx, total, method: 'WS', url: finalUrl, status: 101, durationMs, error: null });
+          } catch (err) {
+            const durationMs = Date.now() - t0;
+            console.log(styleText('red', `ERROR: ${err.message}`));
+            debug('step %d ws error: %s', stepIdx + 1, err.message);
+            onStep?.({ stepIdx, total, method: 'WS', url: finalUrl, status: null, durationMs, error: err.message });
           }
         }
-      }
-
-      // Build final URL: preserve captured path and querystring against target base
-      const dumpUrl = new URL(`http://dummy${reqData.path ?? '/'}`);
-      const base = target.replace(/\/$/, '');
-      const pathPart = dumpUrl.pathname !== '/' ? dumpUrl.pathname : '';
-      const finalUrl = `${base}${pathPart}${dumpUrl.search}` || target;
-
-      const method = (reqData.method ?? 'POST').toUpperCase();
-
-      // GET and HEAD must not carry a body
-      const reqBody = (method === 'GET' || method === 'HEAD') ? undefined : (body || undefined);
-
-      const total = manifest.steps.length;
-
-      if (dryRun) {
-        console.log(`  [${stepIdx + 1}] DRY ${method} → ${finalUrl}`);
-        if (reqBody) console.log(`    body: ${String(reqBody).slice(0, 80)}...`);
       } else {
-        process.stdout.write(`  [${stepIdx + 1}] ${method} ${finalUrl} ... `);
-        const t0 = Date.now();
+        // ── HTTP step ───────────────────────────────────────────────────────
+        let reqData;
         try {
-          const status = await httpSend(finalUrl, method, headers, reqBody);
-          const durationMs = Date.now() - t0;
-          console.log(styleText(status < 400 ? 'green' : 'yellow', `${status}`));
-          debug('step %d → %d', stepIdx + 1, status);
-          onStep?.({ stepIdx, total, method, url: finalUrl, status, durationMs, error: null });
+          reqData = loadCaptureRequest(capturePath);
         } catch (err) {
-          const durationMs = Date.now() - t0;
-          console.log(styleText('red', `ERROR: ${err.message}`));
-          debug('step %d error: %s', stepIdx + 1, err.message);
-          onStep?.({ stepIdx, total, method, url: finalUrl, status: null, durationMs, error: err.message });
+          console.error(styleText('red', `  [${stepIdx + 1}] Error: ${err.message}`));
+          continue;
+        }
+
+        // Build headers — optionally strip Host
+        const headers = {};
+        for (const [k, v] of Object.entries(reqData.headers ?? {})) {
+          if (k.toLowerCase() === 'host' && !sendHostHeader) continue;
+          headers[k] = Array.isArray(v) ? v[0] : String(v);
+        }
+
+        // Apply step overrides
+        if (step.overrides?.headers) {
+          Object.assign(headers, step.overrides.headers);
+        }
+
+        // Build body
+        let body;
+        const bodyEncoding = reqData.bodyEncoding ?? 'utf8';
+        if (reqData.body || reqData.body === '') {
+          const rawBody = String(reqData.body);
+          if (bodyEncoding === 'base64') {
+            body = Buffer.from(rawBody, 'base64');
+          } else {
+            // Normalize JSON bodies
+            const trimmed = rawBody.trim();
+            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+              try {
+                body = JSON.stringify(JSON.parse(trimmed));
+              } catch {
+                body = rawBody;
+              }
+            } else {
+              body = rawBody;
+            }
+          }
+        }
+
+        // Build final URL: preserve captured path and querystring against target base
+        const dumpUrl = new URL(`http://dummy${reqData.path ?? '/'}`);
+        const base = target.replace(/\/$/, '');
+        const pathPart = dumpUrl.pathname !== '/' ? dumpUrl.pathname : '';
+        const finalUrl = `${base}${pathPart}${dumpUrl.search}` || target;
+
+        const method = (reqData.method ?? 'POST').toUpperCase();
+
+        // GET and HEAD must not carry a body
+        const reqBody = (method === 'GET' || method === 'HEAD') ? undefined : (body || undefined);
+
+        if (dryRun) {
+          console.log(`  [${stepIdx + 1}] DRY ${method} → ${finalUrl}`);
+          if (reqBody) console.log(`    body: ${String(reqBody).slice(0, 80)}...`);
+        } else {
+          process.stdout.write(`  [${stepIdx + 1}] ${method} ${finalUrl} ... `);
+          const t0 = Date.now();
+          try {
+            const status = await httpSend(finalUrl, method, headers, reqBody);
+            const durationMs = Date.now() - t0;
+            console.log(styleText(status < 400 ? 'green' : 'yellow', `${status}`));
+            debug('step %d → %d', stepIdx + 1, status);
+            onStep?.({ stepIdx, total, method, url: finalUrl, status, durationMs, error: null });
+          } catch (err) {
+            const durationMs = Date.now() - t0;
+            console.log(styleText('red', `ERROR: ${err.message}`));
+            debug('step %d error: %s', stepIdx + 1, err.message);
+            onStep?.({ stepIdx, total, method, url: finalUrl, status: null, durationMs, error: err.message });
+          }
         }
       }
 
@@ -138,6 +190,127 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
+}
+
+/**
+ * Open a WebSocket connection, send all client-direction frames, then close.
+ * Uses a raw TCP socket so we can set arbitrary headers (including Host).
+ *
+ * @param {string} url - ws:// or wss:// URL
+ * @param {Array} frames - frame objects from the capture ({dir, opcode, encoding, data})
+ * @param {object} headers - extra HTTP headers to include in the upgrade request
+ * @returns {Promise<101>}
+ */
+function wsSend(url, frames, headers) {
+  return new Promise((resolve, reject) => {
+    const urlObj = new URL(url);
+    const port = parseInt(urlObj.port) || (urlObj.protocol === 'wss:' ? 443 : 80);
+    const path = (urlObj.pathname || '/') + (urlObj.search || '');
+
+    const key = randomBytes(16).toString('base64');
+    const upgradeHeaders = {
+      host: urlObj.host,
+      ...headers,
+      upgrade: 'websocket',
+      connection: 'Upgrade',
+      'sec-websocket-key': key,
+      'sec-websocket-version': '13',
+    };
+
+    const upgradeReq =
+      `GET ${path} HTTP/1.1\r\n` +
+      Object.entries(upgradeHeaders).map(([k, v]) => `${k}: ${v}`).join('\r\n') +
+      '\r\n\r\n';
+
+    const socket = netConnect({ host: urlObj.hostname, port });
+    let buf = Buffer.alloc(0);
+    let upgraded = false;
+    let done = false;
+
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      socket.destroy();
+      if (result instanceof Error) reject(result);
+      else resolve(result);
+    };
+
+    socket.setTimeout(10000);
+    socket.on('timeout', () => finish(new Error('WebSocket connection timeout')));
+    socket.on('error', finish);
+
+    socket.on('connect', () => socket.write(upgradeReq));
+
+    socket.on('data', (chunk) => {
+      if (upgraded) return;
+      buf = Buffer.concat([buf, chunk]);
+      const sep = buf.indexOf('\r\n\r\n');
+      if (sep === -1) return;
+
+      const statusLine = buf.slice(0, buf.indexOf('\r\n')).toString();
+      if (!statusLine.includes('101')) {
+        finish(new Error(`WebSocket upgrade failed: ${statusLine.trim()}`));
+        return;
+      }
+      upgraded = true;
+
+      // Send all client frames
+      const clientFrames = frames.filter(f => f.dir === 'client' || !f.dir);
+      for (const frame of clientFrames) {
+        // Only send data-bearing frames (text=1, binary=2, ping=9)
+        if (![1, 2, 9].includes(frame.opcode)) continue;
+        const payload = frame.encoding === 'base64'
+          ? Buffer.from(frame.data ?? '', 'base64')
+          : Buffer.from(frame.data ?? '', 'utf8');
+        socket.write(_encodeWsFrame(frame.opcode, payload));
+      }
+
+      // Send close frame
+      socket.write(_encodeWsFrame(8, Buffer.alloc(0)));
+      finish(101);
+    });
+
+    socket.on('close', () => {
+      if (!done) finish(upgraded ? 101 : new Error('Connection closed before WebSocket upgrade'));
+    });
+  });
+}
+
+/**
+ * Encode a single RFC 6455 WebSocket frame (client→server, always masked).
+ * @param {number} opcode
+ * @param {Buffer} payload
+ * @returns {Buffer}
+ */
+function _encodeWsFrame(opcode, payload) {
+  const len = payload.length;
+  let headerLen;
+  if (len <= 125) headerLen = 2;
+  else if (len <= 65535) headerLen = 4;
+  else headerLen = 10;
+
+  const frame = Buffer.allocUnsafe(headerLen + 4 + len); // header + mask key + payload
+  frame[0] = 0x80 | opcode; // FIN=1 + opcode
+
+  const maskOffset = headerLen;
+  if (len <= 125) {
+    frame[1] = 0x80 | len;
+  } else if (len <= 65535) {
+    frame[1] = 0x80 | 126;
+    frame.writeUInt16BE(len, 2);
+  } else {
+    frame[1] = 0x80 | 127;
+    frame.writeBigUInt64BE(BigInt(len), 2);
+  }
+
+  const maskKey = randomBytes(4);
+  maskKey.copy(frame, maskOffset);
+
+  for (let i = 0; i < len; i++) {
+    frame[maskOffset + 4 + i] = payload[i] ^ maskKey[i % 4];
+  }
+
+  return frame;
 }
 
 /**

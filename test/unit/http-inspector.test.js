@@ -147,3 +147,57 @@ describe('HttpInspector', () => {
     assert.ok(doc.request.body.length <= 1024 + 10); // +10 for encoding overhead
   });
 });
+
+describe('HttpInspector.captureWebSocket', () => {
+  it('writes a .ws.yaml file with captureId, path, headers, and frames', () => {
+    const insp = makeInspector();
+    const frames = [
+      { dir: 'client', opcode: 1, encoding: 'utf8', data: 'ping' },
+      { dir: 'server', opcode: 1, encoding: 'utf8', data: 'ping' },
+    ];
+    const captureId = insp.captureWebSocket({
+      path: '/echo',
+      reqHeaders: { host: 'example.com', upgrade: 'websocket' },
+      frames,
+    });
+
+    const files = listFiles();
+    assert.equal(files.length, 1);
+    assert.ok(files[0].endsWith('.ws.yaml'), `expected .ws.yaml, got ${files[0]}`);
+    assert.ok(files[0].includes(captureId));
+
+    const doc = readYaml(files[0]);
+    assert.equal(doc.captureId, captureId);
+    assert.equal(doc.tunnelId, 'test-tunnel');
+    assert.ok(doc.timestamp);
+    assert.equal(doc.websocket.path, '/echo');
+    assert.equal(doc.websocket.headers['host'], 'example.com');
+    assert.equal(doc.websocket.frames.length, 2);
+    assert.equal(doc.websocket.frames[0].dir, 'client');
+    assert.equal(doc.websocket.frames[0].data, 'ping');
+    assert.equal(doc.websocket.frames[1].dir, 'server');
+  });
+
+  it('stores binary frames with base64 encoding', () => {
+    const insp = makeInspector();
+    const binaryData = Buffer.from([0x00, 0x01, 0x02, 0x03]).toString('base64');
+    const captureId = insp.captureWebSocket({
+      path: '/bin',
+      reqHeaders: {},
+      frames: [{ dir: 'client', opcode: 2, encoding: 'base64', data: binaryData }],
+    });
+
+    const files = listFiles();
+    const doc = readYaml(files[0]);
+    assert.equal(doc.websocket.frames[0].encoding, 'base64');
+    assert.equal(doc.websocket.frames[0].data, binaryData);
+  });
+
+  it('returns the captureId used in the filename', () => {
+    const insp = makeInspector();
+    const captureId = insp.captureWebSocket({ path: '/x', reqHeaders: {}, frames: [] });
+    const files = listFiles();
+    assert.ok(files[0].includes(captureId));
+    assert.ok(files[0].startsWith(`test-tunnel.${captureId}`));
+  });
+});

@@ -1,0 +1,6 @@
+target: ws://demo.tt.localhost:8080
+
+steps:
+  # WebSocket echo session: send two text frames and close
+  - type: ws
+    capture: demo-ws/demo.312778114199552.ws.yaml
