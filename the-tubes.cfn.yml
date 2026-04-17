@@ -453,6 +453,13 @@ Resources:
           set -e
           exec > >(tee /var/log/user-data.log) 2>&1
 
+          # AL2023 runs dnf-makecache.timer right after boot and holds the RPM lock.
+          # wait until the lock is released to prevent dnf race condition
+          while pgrep -f dnf > /dev/null; do 
+            echo "Waiting DNF lock release..."
+            sleep 5
+          done
+
           # Install dependencies
           dnf install -y python3-pip
           pip3 install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
@@ -469,14 +476,14 @@ Resources:
           CUSTOM_DOMAIN="${ServiceName}.${DomainName}"
           [ "${LetsEncryptEnvironment}" = "production" ] && ACME_SERVER="https://acme-v02.api.letsencrypt.org/directory" || ACME_SERVER="https://acme-staging-v02.api.letsencrypt.org/directory"
 
-          # Create data directory for tt-server persistent state (admin token, blocklist)
-          mkdir -p /opt/the-tubes/tt && chmod 700 /opt/the-tubes/tt && cd /opt/the-tubes
+          # Create data directory for tt-server persistent state (admin token, blocklist).
+          mkdir -p /opt/the-tubes/tt && chmod 777 /opt/the-tubes/tt && cd /opt/the-tubes
           
           # Create docker-compose.yml
           cat > docker-compose.yml << 'COMPOSE_EOF'
           services:
             traefik:
-              image: traefik:v3.5.3
+              image: traefik:v3.6.13
               container_name: traefik
               restart: unless-stopped
               networks:
@@ -591,12 +598,12 @@ Resources:
 
           # Conditionally add HTTPS Traefik labels and rate-limiting middlewares
           if [ "${SecureTraffic}" = "true" ]; then
-            sed -i '/# PUBLIC_HTTP_MIDDLEWARE_PLACEHOLDER/c\                - "traefik.http.routers.tt-public-http.middlewares=https-redirect,public-rl"' docker-compose.yml
-            sed -i '/# HTTPS_LABELS_PLACEHOLDER/c\                - "traefik.http.routers.tt-admin.tls=true"\n                - "traefik.http.routers.tt-admin.tls.certresolver=letsencrypt"\n                - "traefik.http.routers.tt-public.rule=HostRegexp(`^[a-zA-Z0-9-]+[.]DOMAIN_PLACEHOLDER$`)"\n                - "traefik.http.routers.tt-public.entrypoints=websecure"\n                - "traefik.http.routers.tt-public.middlewares=public-rl"\n                - "traefik.http.routers.tt-public.service=tt-public-svc"\n                - "traefik.http.routers.tt-public.tls=true"\n                - "traefik.http.routers.tt-public.tls.certresolver=letsencrypt"\n                - "traefik.http.routers.tt-public.tls.domains[0].main=DOMAIN_PLACEHOLDER"\n                - "traefik.http.routers.tt-public.tls.domains[0].sans=*.DOMAIN_PLACEHOLDER"\n                - "traefik.http.routers.tt-public.priority=10"\n                - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"\n                - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"' docker-compose.yml
-            sed -i '/# DASHBOARD_TLS_PLACEHOLDER/c\                - "traefik.http.routers.traefik-dashboard.tls=true"\n                - "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"' docker-compose.yml
-            sed -i '/# SERVER_ADMIN_TLS_PLACEHOLDER/c\                - "traefik.http.routers.tt-server-admin.tls=true"\n                - "traefik.http.routers.tt-server-admin.tls.certresolver=letsencrypt"' docker-compose.yml
+            sed -i '/# PUBLIC_HTTP_MIDDLEWARE_PLACEHOLDER/c\      - "traefik.http.routers.tt-public-http.middlewares=https-redirect,public-rl"' docker-compose.yml
+            sed -i '/# HTTPS_LABELS_PLACEHOLDER/c\      - "traefik.http.routers.tt-admin.tls=true"\n      - "traefik.http.routers.tt-admin.tls.certresolver=letsencrypt"\n      - "traefik.http.routers.tt-public.rule=HostRegexp(`^[a-zA-Z0-9-]+[.]DOMAIN_PLACEHOLDER$`)"\n      - "traefik.http.routers.tt-public.entrypoints=websecure"\n      - "traefik.http.routers.tt-public.middlewares=public-rl"\n      - "traefik.http.routers.tt-public.service=tt-public-svc"\n      - "traefik.http.routers.tt-public.tls=true"\n      - "traefik.http.routers.tt-public.tls.certresolver=letsencrypt"\n      - "traefik.http.routers.tt-public.tls.domains[0].main=DOMAIN_PLACEHOLDER"\n      - "traefik.http.routers.tt-public.tls.domains[0].sans=*.DOMAIN_PLACEHOLDER"\n      - "traefik.http.routers.tt-public.priority=10"\n      - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"\n      - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"' docker-compose.yml
+            sed -i '/# DASHBOARD_TLS_PLACEHOLDER/c\      - "traefik.http.routers.traefik-dashboard.tls=true"\n      - "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"' docker-compose.yml
+            sed -i '/# SERVER_ADMIN_TLS_PLACEHOLDER/c\      - "traefik.http.routers.tt-server-admin.tls=true"\n      - "traefik.http.routers.tt-server-admin.tls.certresolver=letsencrypt"' docker-compose.yml
           else
-            sed -i '/# PUBLIC_HTTP_MIDDLEWARE_PLACEHOLDER/c\                - "traefik.http.routers.tt-public-http.middlewares=public-rl"' docker-compose.yml
+            sed -i '/# PUBLIC_HTTP_MIDDLEWARE_PLACEHOLDER/c\      - "traefik.http.routers.tt-public-http.middlewares=public-rl"' docker-compose.yml
             sed -i '/# HTTPS_LABELS_PLACEHOLDER/d' docker-compose.yml
             sed -i '/# DASHBOARD_TLS_PLACEHOLDER/d' docker-compose.yml
             sed -i '/# SERVER_ADMIN_TLS_PLACEHOLDER/d' docker-compose.yml
@@ -607,7 +614,7 @@ Resources:
           sed -i "s/DOMAIN_PLACEHOLDER/$CUSTOM_DOMAIN/g" docker-compose.yml
 
           # Pull Docker images and start containers
-          docker pull traefik:v3.5.3
+          docker pull traefik:v3.6.13
           docker pull ${DockerImage}
           docker-compose up -d
           sleep 60

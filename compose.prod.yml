@@ -28,7 +28,7 @@ services:
 
   # ── Traefik ─────────────────────────────────────────────────────────────────
   traefik:
-    image: traefik:v3.5.3
+    image: traefik:v3.6.13
     container_name: traefik
     restart: unless-stopped
     networks:
