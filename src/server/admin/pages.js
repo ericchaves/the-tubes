@@ -7,6 +7,20 @@
  * is used only with string literals that contain no external data.
  */
 
+// ── Lucide SVG icons (inline, no external deps) ────────────────────────────
+function icon(paths, size = 14) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;pointer-events:none">${paths}</svg>`;
+}
+const ICON = {
+  eye:     icon('<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>'),
+  eyeOff:  icon('<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/>'),
+  copy:    icon('<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>'),
+  refresh: icon('<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>'),
+  pencil:  icon('<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>'),
+  x:       icon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
+  chevron: icon('<path d="m6 9 6 6 6-6"/>'),
+};
+
 const CSS = `
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -28,7 +42,8 @@ main{max-width:1400px;margin:0 auto;padding:20px;display:flex;flex-direction:col
 section{background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden}
 section h2{font-size:11px;font-weight:600;padding:9px 14px;border-bottom:1px solid var(--border);color:var(--dim);text-transform:uppercase;letter-spacing:.06em;display:flex;align-items:center;gap:6px}
 section h2.collapsible-trigger{cursor:pointer;user-select:none}
-section h2 .toggle{margin-left:auto;color:var(--dim);font-size:10px}
+section h2 .toggle{margin-left:auto;color:var(--dim);display:inline-flex;align-items:center;transition:transform .25s ease;transform:rotate(-90deg)}
+section h2.section-open .toggle{transform:rotate(0deg)}
 .collapsible{overflow:hidden;transition:max-height .25s ease;max-height:9999px}
 .collapsible.collapsed{max-height:0!important}
 .kv{display:grid;grid-template-columns:220px 1fr;border-top:1px solid var(--border)}
@@ -63,7 +78,7 @@ tr:hover td{background:var(--surface2)}
 button{padding:5px 14px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);cursor:pointer;font-size:13px;font-family:inherit}
 button:hover{border-color:var(--blue);color:var(--blue)}
 button.danger:hover{border-color:var(--red);color:var(--red)}
-.btn-icon{padding:2px 7px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer;font-size:13px;font-family:inherit;line-height:1.4}
+.btn-icon{padding:3px 7px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer;font-size:13px;font-family:inherit;line-height:1;display:inline-flex;align-items:center}
 .btn-icon:hover{border-color:var(--blue);color:var(--blue)}
 .btn-icon.danger:hover{border-color:var(--red);color:var(--red)}
 .token-val{font-family:inherit;font-size:12px;color:var(--text);letter-spacing:.04em}
@@ -87,14 +102,14 @@ const TYPE_META={
   'tunnel.reconnected':     ['t-reconnected','RECONNECTED'],
   'tunnel.window_expired':  ['t-expired',    'WIN EXPIRED'],
   'tunnel.destroyed':       ['t-destroyed',  'DESTROYED'],
-  'request.received':       ['t-received',   'REQ →'],
+  'request.received':       ['t-received',   'REQ \u2192'],
   'request.waiting':        ['t-received',   'WAITING'],
   'request.delivered':      ['t-delivered',  'DELIVERED'],
   'request.failed':         ['t-failed',     'FAILED'],
   'response.complete':      ['t-complete',   'RESPONSE'],
   'response.aborted':       ['t-aborted',    'ABORTED'],
-  'ws.received':            ['t-ws',         'WS →'],
-  'ws.delivered':           ['t-ws',         'WS ↑'],
+  'ws.received':            ['t-ws',         'WS \u2192'],
+  'ws.delivered':           ['t-ws',         'WS \u2191'],
   'ws.failed':              ['t-ws-failed',  'WS ERR'],
   'ws.closed':              ['t-ws-closed',  'WS END'],
   'server.error':           ['t-failed',     'SERVER ERR'],
@@ -109,22 +124,22 @@ function fmtBytes(n){if(!n)return'0 B';if(n<1024)return n+' B';if(n<1048576)retu
 function fmtTime(ts){const d=new Date(ts);return d.toTimeString().slice(0,8)+'.'+String(d.getMilliseconds()).padStart(3,'0')}
 function eventSummary(e){
   switch(e.type){
-    case'tunnel.created':return'port '+e.port+'  max '+e.maxConnections+' conns  token '+e.sessionTokenPrefix+'…';
+    case'tunnel.created':return'port '+e.port+'  max '+e.maxConnections+' conns  token '+e.sessionTokenPrefix+'\u2026';
     case'tunnel.connected':return e.socketCount+' socket'+(e.socketCount!==1?'s':'')+' in pool'+(e.clientIp?' from '+e.clientIp:'');
     case'tunnel.disconnected':return'reconnect window '+e.reconnectWindowMs+'ms';
     case'tunnel.reconnected':return e.socketCount+' socket'+(e.socketCount!==1?'s':'')+' in pool'+(e.clientIp?' from '+e.clientIp:'');
-    case'tunnel.window_expired':return'no reconnect within window — tunnel closed';
+    case'tunnel.window_expired':return'no reconnect within window \u2014 tunnel closed';
     case'tunnel.destroyed':return'';
     case'request.received':return(e.method||'?')+' '+e.path+'  from '+(e.remoteAddr||'?');
-    case'request.waiting':return(e.method||'?')+' '+e.path+'  waiting for socket…';
+    case'request.waiting':return(e.method||'?')+' '+e.path+'  waiting for socket\u2026';
     case'request.delivered':return(e.method||'?')+' '+e.path+'  pool: '+e.socketPoolRemaining+' remaining';
     case'request.failed':return(e.method||'?')+' '+e.path+'  reason: '+e.reason+'  sent: '+e.statusSent;
-    case'response.complete':return(e.method||'?')+' '+e.path+'  '+(e.status||'?')+'  '+e.durationMs+'ms  ↑'+fmtBytes(e.bytesIn)+' ↓'+fmtBytes(e.bytesOut);
-    case'response.aborted':return(e.method||'?')+' '+e.path+'  '+(e.status||'?')+'  '+e.reason+'  '+e.durationMs+'ms  ↓'+fmtBytes(e.bytesOut);
+    case'response.complete':return(e.method||'?')+' '+e.path+'  '+(e.status||'?')+'  '+e.durationMs+'ms  \u2191'+fmtBytes(e.bytesIn)+' \u2193'+fmtBytes(e.bytesOut);
+    case'response.aborted':return(e.method||'?')+' '+e.path+'  '+(e.status||'?')+'  '+e.reason+'  '+e.durationMs+'ms  \u2193'+fmtBytes(e.bytesOut);
     case'ws.received':return e.path+'  from '+(e.remoteAddr||'?');
     case'ws.delivered':return e.path+'  pool: '+e.socketPoolRemaining+' remaining';
     case'ws.failed':return e.path+'  reason: '+e.reason;
-    case'ws.closed':return e.path+'  '+e.reason+'  '+e.durationMs+'ms  ↑'+fmtBytes(e.bytesIn)+' ↓'+fmtBytes(e.bytesOut);
+    case'ws.closed':return e.path+'  '+e.reason+'  '+e.durationMs+'ms  \u2191'+fmtBytes(e.bytesIn)+' \u2193'+fmtBytes(e.bytesOut);
     case'server.error':{
       const parts=[];
       if(e.method)parts.push(e.method);
@@ -132,7 +147,7 @@ function eventSummary(e){
       if(e.path&&e.path!=='/')parts.push(e.path);
       if(e.clientIp)parts.push('from '+e.clientIp);
       if(e.reason)parts.push('reason: '+e.reason);
-      if(e.statusSent)parts.push('→ '+e.statusSent);
+      if(e.statusSent)parts.push('\u2192 '+e.statusSent);
       if(e.detail)parts.push('('+e.detail+')');
       return parts.join('  ');
     }
@@ -140,7 +155,7 @@ function eventSummary(e){
     case'ip.unblocked':return e.ip+'  reason='+e.reason;
     case'ip.added_permanent':return e.ip;
     case'ip.removed_permanent':return e.ip;
-    case'server.token_rotated':return'new prefix: '+e.tokenPrefix+'…';
+    case'server.token_rotated':return'new prefix: '+e.tokenPrefix+'\u2026';
     case'server.request_blocked':return e.ip+'  '+(e.method||'?')+' '+(e.host||'')+'  reason='+e.reason;
     default:return e.type;
   }
@@ -205,11 +220,13 @@ function setupCollapsible() {
   document.querySelectorAll('section h2.collapsible-trigger').forEach(h2 => {
     const body = document.getElementById(h2.dataset.collapse);
     if (!body) return;
+    // Set initial open state based on whether body starts collapsed
+    if (!body.classList.contains('collapsed')) h2.classList.add('section-open');
     h2.addEventListener('click', (ev) => {
       // Don't toggle if click was on an action button inside h2
       if (ev.target.closest('.section-actions')) return;
       const collapsed = body.classList.toggle('collapsed');
-      h2.querySelector('.toggle').textContent = collapsed ? '▸' : '▾';
+      h2.classList.toggle('section-open', !collapsed);
     });
   });
 }
@@ -264,7 +281,7 @@ export function adminIndexPage(filteredConfig, adminToken) {
 </header>
 <main>
   <section>
-    <h2 class="collapsible-trigger" data-collapse="tunnels-wrap">Active tunnels (<span id="tunnel-count">0</span>) <span class="toggle">▾</span></h2>
+    <h2 class="collapsible-trigger section-open" data-collapse="tunnels-wrap">Active tunnels (<span id="tunnel-count">0</span>) <span class="toggle">${ICON.chevron}</span></h2>
     <div id="tunnels-wrap" class="collapsible">
       <table>
         <thead><tr>
@@ -277,32 +294,41 @@ export function adminIndexPage(filteredConfig, adminToken) {
     </div>
   </section>
   <section>
-    <h2 class="collapsible-trigger" data-collapse="activity-wrap">
+    <h2 class="collapsible-trigger section-open" data-collapse="activity-wrap">
       Server activity
       <span class="section-actions">
-        <button class="btn-icon danger" id="btn-clear-log" title="Clear log">✕</button>
+        <button class="btn-icon danger" id="btn-clear-log" title="Clear log">${ICON.x}</button>
       </span>
-      <span class="toggle">▾</span>
+      <span class="toggle">${ICON.chevron}</span>
     </h2>
     <div id="activity-wrap" class="collapsible">
       <div class="log" id="event-log">
-        <div class="empty">Waiting for events…</div>
+        <div class="empty">Waiting for events\u2026</div>
       </div>
     </div>
   </section>
   <section>
-    <h2 class="collapsible-trigger" data-collapse="config-wrap">Server configuration <span class="toggle">▸</span></h2>
+    <h2 class="collapsible-trigger" data-collapse="config-wrap">Server configuration <span class="toggle">${ICON.chevron}</span></h2>
     <div id="config-wrap" class="collapsible collapsed">
       <dl class="kv" id="config-kv">
         <dt>Admin Token</dt>
         <dd>
           <span class="token-val" id="token-display"></span>
-          <button class="btn-icon" id="btn-token-reveal" title="Reveal / hide token">👁</button>
-          <button class="btn-icon" id="btn-token-copy" title="Copy token">📋</button>
-          <button class="btn-icon" id="btn-token-rotate" title="Rotate token">🔄</button>
+          <button class="btn-icon" id="btn-token-reveal" title="Reveal / hide token">
+            <span id="icon-eye-show">${ICON.eye}</span>
+            <span id="icon-eye-hide" style="display:none">${ICON.eyeOff}</span>
+          </button>
+          <button class="btn-icon" id="btn-token-copy" title="Copy token">${ICON.copy}</button>
+          <button class="btn-icon" id="btn-token-rotate" title="Rotate to new random token">${ICON.refresh}</button>
+          <button class="btn-icon" id="btn-token-set" title="Set specific token value">${ICON.pencil}</button>
           <span class="token-feedback" id="token-feedback"></span>
         </dd>
       </dl>
+      <div class="input-row" id="set-token-row" style="display:none">
+        <input type="text" id="set-token-input" placeholder="New token (min 8 chars, a-z A-Z 0-9 _ -)" autocomplete="off" spellcheck="false">
+        <button id="btn-token-set-confirm">Set</button>
+        <button id="btn-token-set-cancel">Cancel</button>
+      </div>
       <dl class="kv" id="config-kv-rest"></dl>
     </div>
   </section>
@@ -314,11 +340,17 @@ ${CLIENT_SHARED_JS}
 ;(function() {
   let token = ${tokenJson};
   let revealed = false;
-  const display = document.getElementById('token-display');
-  const feedback = document.getElementById('token-feedback');
+  const display   = document.getElementById('token-display');
+  const feedback  = document.getElementById('token-feedback');
+  const iconShow  = document.getElementById('icon-eye-show');
+  const iconHide  = document.getElementById('icon-eye-hide');
 
-  function mask(t) { return t ? t.slice(0,8)+'…'+t.slice(-4) : '(none)'; }
+  function mask(t) { return t ? t.slice(0,8)+'\u2026'+t.slice(-4) : '(none)'; }
   function render() { display.textContent = revealed ? token : mask(token); }
+  function syncRevealIcon() {
+    iconShow.style.display = revealed ? 'none' : '';
+    iconHide.style.display = revealed ? '' : 'none';
+  }
   render();
 
   function showFeedback(msg, color) {
@@ -332,6 +364,7 @@ ${CLIENT_SHARED_JS}
     ev.stopPropagation();
     revealed = !revealed;
     render();
+    syncRevealIcon();
   });
 
   document.getElementById('btn-token-copy').addEventListener('click', (ev) => {
@@ -355,16 +388,63 @@ ${CLIENT_SHARED_JS}
       token = body.token;
       revealed = true;
       render();
-      showFeedback('Token rotated — copy it now!');
+      syncRevealIcon();
+      showFeedback('Token rotated \u2014 copy it now!');
     } catch (err) {
       showFeedback(err.message, 'var(--red)');
     }
   });
 
+  // ── Set specific token value ──────────────────────────────────────────────
+  const setRow   = document.getElementById('set-token-row');
+  const setInput = document.getElementById('set-token-input');
+
+  document.getElementById('btn-token-set').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const visible = setRow.style.display !== 'none';
+    setRow.style.display = visible ? 'none' : 'flex';
+    if (!visible) setInput.focus();
+  });
+
+  document.getElementById('btn-token-set-cancel').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    setRow.style.display = 'none';
+    setInput.value = '';
+  });
+
+  document.getElementById('btn-token-set-confirm').addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    const newToken = setInput.value.trim();
+    if (!newToken) return;
+    try {
+      const res = await fetch('/api/admin/set-token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-TT-Admin-Token': token },
+        body: JSON.stringify({ token: newToken }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { showFeedback(body.error || 'Error', 'var(--red)'); return; }
+      token = body.token;
+      revealed = true;
+      render();
+      syncRevealIcon();
+      setRow.style.display = 'none';
+      setInput.value = '';
+      showFeedback('Token updated \u2014 copy it now!');
+    } catch (err) {
+      showFeedback(err.message, 'var(--red)');
+    }
+  });
+
+  setInput.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter') document.getElementById('btn-token-set-confirm').click();
+    if (ev.key === 'Escape') document.getElementById('btn-token-set-cancel').click();
+  });
+
   // Update token when server.token_rotated SSE arrives
   window._onTokenRotated = (newPrefix) => {
-    showFeedback('Token rotated elsewhere — refresh to get new token', 'var(--orange)');
-    display.textContent = newPrefix + '…(rotated)';
+    showFeedback('Token rotated elsewhere \u2014 refresh to get new token', 'var(--orange)');
+    display.textContent = newPrefix + '\u2026(rotated)';
   };
 })();
 
@@ -376,7 +456,7 @@ ${CLIENT_SHARED_JS}
     const dt = document.createElement('dt');
     dt.textContent = k;
     const dd = document.createElement('dd');
-    dd.textContent = v == null ? '—' : String(v);
+    dd.textContent = v == null ? '\u2014' : String(v);
     kv.appendChild(dt);
     kv.appendChild(dd);
   }
@@ -396,7 +476,7 @@ function renderTunnels() {
   const tbody = document.getElementById('tunnels-body');
   const active = [...tunnels.values()].filter(t => t.status !== 'destroyed' && t.status !== 'expired');
   document.getElementById('tunnel-count').textContent = active.length;
-  tbody.innerHTML = ''; // safe — we rebuild with DOM below
+  tbody.textContent = ''; // safe clear
   if (!active.length) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
@@ -419,12 +499,12 @@ function renderTunnels() {
     tdStatus.appendChild(badgeEl(t.status));
     // Plain text cells
     const cells = [
-      t.port ?? '—',
+      t.port ?? '\u2014',
       (t.socketCount ?? 0) + ' / ' + (t.maxConnections ?? '?'),
-      t.created ? new Date(t.created).toLocaleTimeString() : '—',
+      t.created ? new Date(t.created).toLocaleTimeString() : '\u2014',
       t.reqCount ?? 0,
       t.failCount ?? 0,
-      t.lastActivity ? new Date(t.lastActivity).toLocaleTimeString() : '—',
+      t.lastActivity ? new Date(t.lastActivity).toLocaleTimeString() : '\u2014',
     ];
     tr.appendChild(tdId);
     tr.appendChild(tdStatus);
@@ -538,7 +618,7 @@ setInterval(() => {
 
 setupSse('/tubes/events', handleEvent, document.getElementById('sse-dot'));
 setupCollapsible();
-setupClearLog('btn-clear-log', 'event-log', 'Waiting for events…');
+setupClearLog('btn-clear-log', 'event-log', 'Waiting for events\u2026');
 </script>
 </body>
 </html>`;
@@ -570,20 +650,20 @@ export function adminTunnelPage(tunnelId) {
 </head>
 <body>
 <header>
-  <a href="/tubes">← all tunnels</a>
+  <a href="/tubes">\u2190 all tunnels</a>
   <span id="tunnel-title" style="font-weight:700;font-size:16px"></span>
   <span class="badge unknown" id="status-badge">unknown</span>
   <span class="sse-dot" id="sse-dot"></span>
 </header>
 <main>
   <section>
-    <h2 class="collapsible-trigger" data-collapse="status-wrap">Status <span class="toggle">▾</span></h2>
+    <h2 class="collapsible-trigger section-open" data-collapse="status-wrap">Status <span class="toggle">${ICON.chevron}</span></h2>
     <div id="status-wrap" class="collapsible">
       <div class="stats">
-        <span>Port: <strong id="tunnel-port">—</strong></span>
-        <span>Sockets: <strong id="tunnel-sockets">—</strong></span>
-        <span>Max: <strong id="tunnel-maxconn">—</strong></span>
-        <span>Created: <strong id="tunnel-created">—</strong></span>
+        <span>Port: <strong id="tunnel-port">\u2014</strong></span>
+        <span>Sockets: <strong id="tunnel-sockets">\u2014</strong></span>
+        <span>Max: <strong id="tunnel-maxconn">\u2014</strong></span>
+        <span>Created: <strong id="tunnel-created">\u2014</strong></span>
         <span>Requests ok: <strong id="tunnel-reqs">0</strong></span>
         <span>Failed: <strong id="tunnel-fails">0</strong></span>
         <span>Aborted: <strong id="tunnel-aborted">0</strong></span>
@@ -594,16 +674,16 @@ export function adminTunnelPage(tunnelId) {
     </div>
   </section>
   <section>
-    <h2 class="collapsible-trigger" data-collapse="eventlog-wrap">
+    <h2 class="collapsible-trigger section-open" data-collapse="eventlog-wrap">
       Event log (<span id="event-count">0</span> events)
       <span class="section-actions">
-        <button class="btn-icon danger" id="btn-clear-log" title="Clear log">✕</button>
+        <button class="btn-icon danger" id="btn-clear-log" title="Clear log">${ICON.x}</button>
       </span>
-      <span class="toggle">▾</span>
+      <span class="toggle">${ICON.chevron}</span>
     </h2>
     <div id="eventlog-wrap" class="collapsible">
       <div class="log" id="event-log">
-        <div class="empty">Waiting for events…</div>
+        <div class="empty">Waiting for events\u2026</div>
       </div>
     </div>
   </section>
@@ -633,17 +713,17 @@ function handleEvent(e) {
     case 'server.state': {
       const t = (e.tunnels ?? []).find(t => t.tunnelId === tunnelId);
       if (t) {
-        setField('tunnel-port', t.port ?? '—');
+        setField('tunnel-port', t.port ?? '\u2014');
         setField('tunnel-sockets', t.availableConnections ?? 0);
-        setField('tunnel-maxconn', t.maxConnections ?? '—');
-        setField('tunnel-created', t.createdAt ? new Date(t.createdAt).toLocaleTimeString() : '—');
+        setField('tunnel-maxconn', t.maxConnections ?? '\u2014');
+        setField('tunnel-created', t.createdAt ? new Date(t.createdAt).toLocaleTimeString() : '\u2014');
         updateStatus(t.connected ? 'connected' : 'disconnected');
       }
       return;
     }
     case 'tunnel.created':
-      setField('tunnel-port', e.port ?? '—');
-      setField('tunnel-maxconn', e.maxConnections ?? '—');
+      setField('tunnel-port', e.port ?? '\u2014');
+      setField('tunnel-maxconn', e.maxConnections ?? '\u2014');
       updateStatus('connected');
       break;
     case 'tunnel.connected':
@@ -701,7 +781,7 @@ document.getElementById('btn-disconnect').addEventListener('click', async () => 
 
 setupSse('/tubes/${tunnelIdUrl}/events', handleEvent, document.getElementById('sse-dot'));
 setupCollapsible();
-setupClearLog('btn-clear-log', 'event-log', 'Waiting for events…');
+setupClearLog('btn-clear-log', 'event-log', 'Waiting for events\u2026');
 </script>
 </body>
 </html>`;
@@ -724,14 +804,14 @@ export function adminBlocklistPage({ tempBlocked = [], permBlocked = [] }) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>the tubes — blocklist</title>
+<title>the tubes \u2014 blocklist</title>
 <style>${CSS}
 .bl-table td:last-child{text-align:right}
 </style>
 </head>
 <body>
 <header>
-  <a href="/tubes">← tunnels</a>
+  <a href="/tubes">\u2190 tunnels</a>
   <h1 style="margin-left:8px">Blocklist</h1>
   <nav style="margin-left:12px">
     <a href="/tubes">tunnels</a>
@@ -743,9 +823,9 @@ export function adminBlocklistPage({ tempBlocked = [], permBlocked = [] }) {
 
   <!-- Temporary blocks (rate-limiter) -->
   <section>
-    <h2 class="collapsible-trigger" data-collapse="temp-wrap">
+    <h2 class="collapsible-trigger section-open" data-collapse="temp-wrap">
       Temporary blocks (<span id="temp-count">0</span>)
-      <span class="toggle">▾</span>
+      <span class="toggle">${ICON.chevron}</span>
     </h2>
     <div id="temp-wrap" class="collapsible">
       <table class="bl-table">
@@ -757,9 +837,9 @@ export function adminBlocklistPage({ tempBlocked = [], permBlocked = [] }) {
 
   <!-- Permanent blocks -->
   <section>
-    <h2 class="collapsible-trigger" data-collapse="perm-wrap">
+    <h2 class="collapsible-trigger section-open" data-collapse="perm-wrap">
       Permanent blocks (<span id="perm-count">0</span>)
-      <span class="toggle">▾</span>
+      <span class="toggle">${ICON.chevron}</span>
     </h2>
     <div id="perm-wrap" class="collapsible">
       <div class="input-row">
@@ -927,9 +1007,10 @@ renderPerm();
 document.querySelectorAll('section h2.collapsible-trigger').forEach(h2 => {
   const body = document.getElementById(h2.dataset.collapse);
   if (!body) return;
+  if (!body.classList.contains('collapsed')) h2.classList.add('section-open');
   h2.addEventListener('click', () => {
     const collapsed = body.classList.toggle('collapsed');
-    h2.querySelector('.toggle').textContent = collapsed ? '▸' : '▾';
+    h2.classList.toggle('section-open', !collapsed);
   });
 });
 

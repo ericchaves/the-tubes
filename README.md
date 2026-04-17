@@ -2,6 +2,8 @@
 ![The Tubes](./logo.png)
 Expose local services to the world. Unified tunnel server, client, and webhook replay — single binary, zero runtime dependencies, Node.js 25+.
 
+> **Intended use:** This project is designed to assist developers during development and testing in staging environments. It is not intended for production use or for exposing sensitive applications and data.
+
 ## Quickstart
 
 ```sh

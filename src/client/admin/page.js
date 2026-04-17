@@ -6,6 +6,15 @@
  * via textContent — never innerHTML with untrusted data.
  */
 
+// ── Lucide SVG icons (inline, no external deps) ────────────────────────────
+function icon(paths, size = 14) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;pointer-events:none">${paths}</svg>`;
+}
+const ICON = {
+  x:       icon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
+  chevron: icon('<path d="m6 9 6 6 6-6"/>'),
+};
+
 const CSS = `
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -29,7 +38,8 @@ main{max-width:1100px;margin:0 auto;padding:20px;display:flex;flex-direction:col
 section{background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden}
 section h2{font-size:11px;font-weight:600;padding:8px 14px;border-bottom:1px solid var(--border);color:var(--dim);text-transform:uppercase;letter-spacing:.06em;display:flex;align-items:center;gap:8px}
 section h2.collapsible-trigger{cursor:pointer;user-select:none}
-section h2 .toggle{margin-left:auto;color:var(--dim);font-size:10px}
+section h2 .toggle{margin-left:auto;color:var(--dim);display:inline-flex;align-items:center;transition:transform .25s ease;transform:rotate(-90deg)}
+section h2.section-open .toggle{transform:rotate(0deg)}
 .kv{display:grid;grid-template-columns:220px 1fr}
 .kv dt{padding:5px 14px;color:var(--dim);font-size:12px;border-bottom:1px solid var(--border)}
 .kv dd{padding:5px 14px;border-bottom:1px solid var(--border);word-break:break-all}
@@ -477,14 +487,14 @@ document.querySelectorAll('.filter-btn').forEach(btn => {
 });
 
 // ── Collapsible sections ──────────────────────────────────────────────────────
-// Note: we use max-height:9999px in CSS as the "open" state — no need to read
-// scrollHeight at runtime, which would be 0 if content is injected dynamically.
+// Uses CSS rotation of a chevron SVG via section-open class on h2.
 document.querySelectorAll('section h2.collapsible-trigger').forEach(h2 => {
   const body = document.getElementById(h2.dataset.collapse);
   if(!body) return;
+  if(!body.classList.contains('collapsed')) h2.classList.add('section-open');
   h2.addEventListener('click', () => {
     const collapsed = body.classList.toggle('collapsed');
-    h2.querySelector('.toggle').textContent = collapsed ? '▸' : '▾';
+    h2.classList.toggle('section-open', !collapsed);
   });
 });
 
@@ -575,7 +585,7 @@ export function adminPage({ filteredConfig }) {
 
   <!-- Tunnel info (expanded by default) -->
   <section>
-    <h2 class="collapsible-trigger" data-collapse="tunnel-body">Tunnel <span class="toggle">▾</span></h2>
+    <h2 class="collapsible-trigger section-open" data-collapse="tunnel-body">Tunnel <span class="toggle">${ICON.chevron}</span></h2>
     <div id="tunnel-body" class="collapsible">
       <dl class="kv">
         <dt>Public URL</dt>
@@ -592,7 +602,7 @@ export function adminPage({ filteredConfig }) {
 
   <!-- Health (collapsed by default) -->
   <section>
-    <h2 class="collapsible-trigger" data-collapse="health-body">Health <span class="toggle">▸</span></h2>
+    <h2 class="collapsible-trigger" data-collapse="health-body">Health <span class="toggle">${ICON.chevron}</span></h2>
     <div id="health-body" class="collapsible collapsed">
       <div class="stats-row">
         <div class="stat"><span class="stat-val" id="total-fail">0</span><span class="stat-lbl">total failures</span></div>
@@ -608,7 +618,7 @@ export function adminPage({ filteredConfig }) {
 
   <!-- Flows (collapsed by default) -->
   <section>
-    <h2 class="collapsible-trigger" data-collapse="flows-body">Flows <span class="toggle">▸</span></h2>
+    <h2 class="collapsible-trigger" data-collapse="flows-body">Flows <span class="toggle">${ICON.chevron}</span></h2>
     <div id="flows-body" class="collapsible collapsed">
       <div class="flows-ui">
         <div class="flows-top-row">
@@ -630,9 +640,9 @@ export function adminPage({ filteredConfig }) {
       Activity
       <span id="log-count" style="font-weight:400;color:var(--dim);font-size:11px;margin-left:4px"></span>
       <span style="display:flex;gap:4px;margin-left:auto">
-        <button class="filter-btn" id="btn-clear-log" style="border-radius:4px;padding:1px 7px;font-size:12px" title="Clear log">✕</button>
+        <button class="filter-btn" id="btn-clear-log" style="border-radius:4px;padding:1px 7px;font-size:12px;display:inline-flex;align-items:center" title="Clear log">${ICON.x}</button>
       </span>
-      <span class="toggle" style="margin-left:6px">▾</span>
+      <span class="toggle" style="margin-left:6px">${ICON.chevron}</span>
     </h2>
     <div id="activity-body" class="collapsible">
       <div class="log-filters">
@@ -653,7 +663,7 @@ export function adminPage({ filteredConfig }) {
 
   <!-- Config (collapsed by default, after activity) -->
   <section>
-    <h2 class="collapsible-trigger" data-collapse="config-body">Config <span class="toggle">▸</span></h2>
+    <h2 class="collapsible-trigger" data-collapse="config-body">Config <span class="toggle">${ICON.chevron}</span></h2>
     <div id="config-body" class="collapsible collapsed">
       <dl id="config-kv" class="kv"></dl>
     </div>

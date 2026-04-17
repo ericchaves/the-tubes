@@ -2,7 +2,8 @@
  * Minimal HTTP router for the admin/API server.
  * Routes: POST /api/tunnels, POST /api/tunnels/:id, GET /api/status,
  *         GET /api/tunnels/:id, GET /healthz, GET /tubes/*, POST /tubes/*,
- *         GET/POST/DELETE /api/blocklist/*, POST /api/admin/rotate-token
+ *         GET/POST/DELETE /api/blocklist/*, POST /api/admin/rotate-token,
+ *         POST /api/admin/set-token
  */
 
 import { handleAdminRoute } from './admin/router.js';
@@ -99,6 +100,13 @@ export function handleAdminRequest(req, res, services) {
   if (method === 'POST' && path === '/api/admin/rotate-token') {
     if (!isAdminAuthorized(req, config)) return sendUnauthorized(res);
     return handleRotateToken(req, res, config, globalLog);
+  }
+
+  // ── Token set to specific value (auth required) ───────────────────────────
+
+  if (method === 'POST' && path === '/api/admin/set-token') {
+    if (!isAdminAuthorized(req, config)) return sendUnauthorized(res);
+    return readBody(req).then(body => handleSetToken(body, res, config, globalLog));
   }
 
   // ── Tunnel creation — authenticated ───────────────────────────────────────
@@ -253,6 +261,22 @@ function handleBlocklistRequest(req, res, path, method, rateLimiter, blocklist) 
 
 function handleRotateToken(req, res, config, globalLog) {
   const newToken = randomBytes(32).toString('hex');
+  return applyNewToken(newToken, res, config, globalLog);
+}
+
+function handleSetToken(body, res, config, globalLog) {
+  let token;
+  try { token = JSON.parse(body).token; } catch {}
+  if (typeof token !== 'string' || token.length < 8) {
+    return sendJson(res, 400, { error: 'Token must be at least 8 characters' });
+  }
+  if (!/^[A-Za-z0-9_\-]+$/.test(token)) {
+    return sendJson(res, 400, { error: 'Token may only contain alphanumeric characters, hyphens, and underscores' });
+  }
+  return applyNewToken(token, res, config, globalLog);
+}
+
+function applyNewToken(newToken, res, config, globalLog) {
   const oldPrefix = config.adminToken?.slice(0, 8) ?? '(none)';
   config.adminToken = newToken;
 
