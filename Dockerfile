@@ -20,10 +20,14 @@ COPY src/ ./src/
 COPY package.json ./
 
 # Non-root user for security
-RUN addgroup -S -g 1001 thetubes && adduser -S -G thetubes -u 1001 thetubes
+RUN addgroup -S -g 1001 thetubes && \
+    adduser -S -G thetubes -u 1001 -h /home/thetubes thetubes && \
+    mkdir -p /home/thetubes && \
+    chown thetubes:thetubes /home/thetubes
 USER thetubes
 
-ENV NODE_ENV=production
+ENV NODE_ENV=production \
+    HOME=/home/thetubes
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://localhost:'+(process.env.TT_PUBLIC_PORT||80)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
