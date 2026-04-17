@@ -20,7 +20,7 @@ COPY src/ ./src/
 COPY package.json ./
 
 # Non-root user for security
-RUN addgroup -S thetubes && adduser -S -G thetubes thetubes
+RUN addgroup -S -g 1001 thetubes && adduser -S -G thetubes -u 1001 thetubes
 USER thetubes
 
 ENV NODE_ENV=production

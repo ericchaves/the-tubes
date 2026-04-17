@@ -450,35 +450,71 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          set -e
+          set -eEo pipefail
           exec > >(tee /var/log/user-data.log) 2>&1
 
-          # AL2023 runs dnf-makecache.timer right after boot and holds the RPM lock.
-          # wait until the lock is released to prevent dnf race condition
-          while pgrep -f dnf > /dev/null; do 
-            echo "Waiting DNF lock release..."
+          ts()       { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
+          log_step() { echo ""; echo "[$(ts)] >>> $*"; }
+          log_ok()   { echo "[$(ts)] OK  $*"; }
+
+          log_step "Waiting for package manager lock"
+          while pgrep -x dnf >/dev/null 2>&1 || pgrep -x rpm >/dev/null 2>&1; do
+            echo "  still locked, retrying in 5s..."
             sleep 5
           done
+          log_ok "package manager lock free"
 
-          # Install dependencies
-          dnf install -y python3-pip
-          pip3 install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz
-          dnf clean all && dnf update -y && dnf install -y docker
-          systemctl start docker && systemctl enable docker
+          log_step "Installing aws-cfn-bootstrap (native AL2023 package)"
+          dnf install -y aws-cfn-bootstrap
+          CFN_SIGNAL=$(command -v cfn-signal || true)
+          log_ok "cfn-signal at $CFN_SIGNAL"
+
+          SCRIPT_EXIT_CODE=1
+
+          # EXIT trap: sempre sinaliza o CFN com o status final, mantendo a instância viva para debug via SSM.
+          trap '
+            echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] script exiting (code=$SCRIPT_EXIT_CODE) — instance kept alive for SSM debugging" >> /var/log/user-data.log
+            [ -n "$CFN_SIGNAL" ] && $CFN_SIGNAL -e $SCRIPT_EXIT_CODE --stack ${AWS::StackName} --resource TheTubesInstance --region ${AWS::Region} || true
+          ' EXIT
+
+          # ERR trap: registra a linha e o comando exato que falhou. set -eE faz o script sair
+          # em seguida, disparando a EXIT trap acima com SCRIPT_EXIT_CODE=1 (padrão pessimista).
+          trap '
+            echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] ERROR at line $LINENO: $BASH_COMMAND — instance kept alive for SSM debugging" >> /var/log/user-data.log
+          ' ERR
+
+          log_step "Update dnf and install dnf plugins"
+          dnf update -y && dnf install -y dnf-plugins-core
+          log_ok "dnf done"
+
+          log_step "adding docker-ce oficial repository"
+          dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+          sed -i 's/$releasever/9/g' /etc/yum.repos.d/docker-ce.repo
+          
+          log_step "clean dnf cache and update repositories"
+          dnf clean all && dnf makecache
+
+          log_step "Installing docker v29.3.1"
+          dnf install -y docker-ce-29.3* docker-ce-cli-29.3* containerd.io docker-buildx-plugin docker-compose-plugin
+          systemctl enable  --now docker
           usermod -a -G docker ec2-user
-
-          # Install Docker Compose
-          curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-          chmod +x /usr/local/bin/docker-compose
+          log_ok "docker running: $(docker --version)"
 
           # Set variables
-          set +e
           CUSTOM_DOMAIN="${ServiceName}.${DomainName}"
           [ "${LetsEncryptEnvironment}" = "production" ] && ACME_SERVER="https://acme-v02.api.letsencrypt.org/directory" || ACME_SERVER="https://acme-staging-v02.api.letsencrypt.org/directory"
 
-          # Create data directory for tt-server persistent state (admin token, blocklist).
-          mkdir -p /opt/the-tubes/tt && chmod 777 /opt/the-tubes/tt && cd /opt/the-tubes
-          
+          log_step "Creating working directory and docker-compose.yml"
+          groupadd -r thetubes
+          useradd -r -g thetubes -s /sbin/nologin -M thetubes
+          THETUBES_UID=$(id -u thetubes)
+          THETUBES_GID=$(id -g thetubes)
+          log_ok "thetubes uid=$THETUBES_UID gid=$THETUBES_GID"
+          mkdir -p /opt/the-tubes/tt
+          chown thetubes:thetubes /opt/the-tubes/tt
+          chmod 750 /opt/the-tubes/tt
+          cd /opt/the-tubes
+
           # Create docker-compose.yml
           cat > docker-compose.yml << 'COMPOSE_EOF'
           services:
@@ -525,6 +561,7 @@ Resources:
             the-tubes:
               image: ${DockerImage}
               container_name: the-tubes-server
+              user: "THETUBES_UID_PLACEHOLDER"
               restart: unless-stopped
               networks:
                 - tt_net
@@ -596,7 +633,7 @@ Resources:
             traefik-data:
           COMPOSE_EOF
 
-          # Conditionally add HTTPS Traefik labels and rate-limiting middlewares
+          log_step "Patching docker-compose.yml (HTTPS/TLS labels)"
           if [ "${SecureTraffic}" = "true" ]; then
             sed -i '/# PUBLIC_HTTP_MIDDLEWARE_PLACEHOLDER/c\      - "traefik.http.routers.tt-public-http.middlewares=https-redirect,public-rl"' docker-compose.yml
             sed -i '/# HTTPS_LABELS_PLACEHOLDER/c\      - "traefik.http.routers.tt-admin.tls=true"\n      - "traefik.http.routers.tt-admin.tls.certresolver=letsencrypt"\n      - "traefik.http.routers.tt-public.rule=HostRegexp(`^[a-zA-Z0-9-]+[.]DOMAIN_PLACEHOLDER$`)"\n      - "traefik.http.routers.tt-public.entrypoints=websecure"\n      - "traefik.http.routers.tt-public.middlewares=public-rl"\n      - "traefik.http.routers.tt-public.service=tt-public-svc"\n      - "traefik.http.routers.tt-public.tls=true"\n      - "traefik.http.routers.tt-public.tls.certresolver=letsencrypt"\n      - "traefik.http.routers.tt-public.tls.domains[0].main=DOMAIN_PLACEHOLDER"\n      - "traefik.http.routers.tt-public.tls.domains[0].sans=*.DOMAIN_PLACEHOLDER"\n      - "traefik.http.routers.tt-public.priority=10"\n      - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"\n      - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"' docker-compose.yml
@@ -608,26 +645,34 @@ Resources:
             sed -i '/# DASHBOARD_TLS_PLACEHOLDER/d' docker-compose.yml
             sed -i '/# SERVER_ADMIN_TLS_PLACEHOLDER/d' docker-compose.yml
           fi
+          log_ok "docker-compose.yml patched"
 
-          # Replace runtime placeholders with actual values
+          log_step "Replacing placeholders (domain=$CUSTOM_DOMAIN, acme=$ACME_SERVER, uid=$THETUBES_UID:$THETUBES_GID)"
           sed -i "s|ACME_SERVER_PLACEHOLDER|$ACME_SERVER|g" docker-compose.yml
           sed -i "s/DOMAIN_PLACEHOLDER/$CUSTOM_DOMAIN/g" docker-compose.yml
+          sed -i "s/THETUBES_UID_PLACEHOLDER/$THETUBES_UID:$THETUBES_GID/" docker-compose.yml
+          log_ok "placeholders replaced"
 
-          # Pull Docker images and start containers
+          log_step "Pulling Docker images"
           docker pull traefik:v3.6.13
           docker pull ${DockerImage}
-          docker-compose up -d
+          log_ok "images pulled"
+
+          log_step "Starting containers with docker-compose"
+          docker compose up -d
+          log_ok "containers started, waiting 60s for health checks"
           sleep 60
 
-          # Signal CloudFormation
+          log_step "Checking container status"
+          docker ps
           if docker ps | grep -q "traefik" && docker ps | grep -q "the-tubes-server"; then
-            /usr/bin/cfn-signal -e 0 --stack ${AWS::StackName} --resource TheTubesInstance --region ${AWS::Region}
+            log_ok "traefik and the-tubes-server are running"
+            SCRIPT_EXIT_CODE=0
           else
-            /usr/bin/cfn-signal -e 1 --stack ${AWS::StackName} --resource TheTubesInstance --region ${AWS::Region}
-            exit 1
+            echo "[$(ts)] FAIL one or more containers not running — check 'docker ps' and 'docker logs'"
           fi
 
-          echo "done"
+          log_ok "user-data script complete"
       Tags:
         - Key: Name
           Value: !Sub '${AWS::StackName}-the-tubes-instance'
