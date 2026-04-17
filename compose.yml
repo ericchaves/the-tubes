@@ -23,6 +23,8 @@ services:
       TT_MAX_CONNECTIONS_PER_TUNNEL: "5"
       TT_RECONNECT_WINDOW_MS: "30000"
       # TT_HMAC_SECRET: "change-me-to-a-32-char-secret-here"
+    volumes:
+      - ./.tt:/home/thetubes/.tt
     networks:
       - tt_net
     healthcheck:
@@ -53,11 +55,11 @@ services:
       # TT_SESSION_TOKEN: "compose-demo-session-token"
       TT_CAPTURE_DIR: "/captures"
       TT_FLOWS_DIR: "/flows"
-      # TT_HMAC_SECRET: "change-me-to-a-32-char-secret-here"
+      TT_HMAC_SECRET: "change-me-to-a-32-char-secret-here"
       TT_ADMIN_PORT: "9090"
       TT_ADMIN_ADDRESS: "0.0.0.0"  # required for host access inside Docker
     volumes:
-      - ./.dump:/captures
+      - ./.captures:/captures
       - ./.tt:/home/thetubes/.tt
       - ./flows:/flows:ro
     networks:

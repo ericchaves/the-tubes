@@ -1,10 +1,10 @@
-import { adminIndexPage, adminTunnelPage } from './pages.js';
+import { adminIndexPage, adminTunnelPage, adminBlocklistPage } from './pages.js';
 import { createDebug } from '../../debug.js';
 
 const debug = createDebug('server:admin');
 
-/** Config keys that must never appear in the admin dashboard */
-const SENSITIVE_KEYS = new Set(['hmacSecret', 'hmacSecretFile']);
+/** Config keys that must never appear in the filtered config object sent to the frontend */
+const SENSITIVE_KEYS = new Set(['hmacSecret', 'hmacSecretFile', 'adminToken']);
 
 function filterConfig(config) {
   const out = {};
@@ -42,7 +42,18 @@ export function handleAdminRoute(req, res, services) {
 
   // ── GET /tubes ──────────────────────────────────────────────────────────────
   if (method === 'GET' && path === '/tubes') {
-    const html = adminIndexPage(filterConfig(serverConfig));
+    const html = adminIndexPage(filterConfig(serverConfig), serverConfig.adminToken);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end(html);
+  }
+
+  // ── GET /tubes/blocklist ────────────────────────────────────────────────────
+  if (method === 'GET' && path === '/tubes/blocklist') {
+    const { rateLimiter, blocklist } = services;
+    const html = adminBlocklistPage({
+      tempBlocked: rateLimiter?.listBlocked() ?? [],
+      permBlocked: blocklist?.listPermanent() ?? [],
+    });
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(html);
   }

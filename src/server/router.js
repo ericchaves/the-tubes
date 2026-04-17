@@ -1,10 +1,15 @@
 /**
  * Minimal HTTP router for the admin/API server.
  * Routes: POST /api/tunnels, POST /api/tunnels/:id, GET /api/status,
- *         GET /api/tunnels/:id, GET /healthz, GET /tubes/*, POST /tubes/*
+ *         GET /api/tunnels/:id, GET /healthz, GET /tubes/*, POST /tubes/*,
+ *         GET/POST/DELETE /api/blocklist/*, POST /api/admin/rotate-token
  */
 
 import { handleAdminRoute } from './admin/router.js';
+import { isAdminAuthorized } from './admin/auth.js';
+import { randomBytes } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /**
  * @typedef {import('node:http').IncomingMessage} Req
@@ -14,21 +19,16 @@ import { handleAdminRoute } from './admin/router.js';
 /**
  * @param {Req} req
  * @param {Res} res
- * @param {object} services - { manager, hmacVerify, startedAt, serverConfig, globalLog }
+ * @param {object} services - { manager, hmacVerify, startedAt, serverConfig, globalLog, rateLimiter, blocklist }
  */
 export function handleAdminRequest(req, res, services) {
-  const { manager, hmacVerify, startedAt, globalLog } = services;
+  const { manager, hmacVerify, startedAt, globalLog, rateLimiter, blocklist } = services;
+  const config = services.serverConfig;
   const url = new URL(req.url, 'http://localhost');
   const path = url.pathname;
   const method = req.method.toUpperCase();
 
-  // ── Admin dashboard routes ────────────────────────────────────────────────
-
-  if (path === '/tubes' || path.startsWith('/tubes/')) {
-    return handleAdminRoute(req, res, services);
-  }
-
-  // ── Public health/status routes (no auth) ────────────────────────────────
+  // ── /healthz — always public (load balancer probe) ───────────────────────
 
   if (method === 'GET' && path === '/healthz') {
     return sendJson(res, 200, {
@@ -38,7 +38,23 @@ export function handleAdminRequest(req, res, services) {
     });
   }
 
+  // ── Admin dashboard routes (auth-guarded) ────────────────────────────────
+
+  if (path === '/tubes' || path.startsWith('/tubes/')) {
+    if (!isAdminAuthorized(req, config)) return sendUnauthorized(res);
+    return handleAdminRoute(req, res, services);
+  }
+
+  // ── Authenticated API routes ──────────────────────────────────────────────
+
+  if (!path.startsWith('/api/')) {
+    return sendJson(res, 404, { error: 'Not Found' });
+  }
+
+  // ── GET /api/status — auth required ──────────────────────────────────────
+
   if (method === 'GET' && path === '/api/status') {
+    if (!isAdminAuthorized(req, config)) return sendUnauthorized(res);
     return sendJson(res, 200, {
       protocol: 'the-tubes/1.0',
       uptime: Math.floor((Date.now() - startedAt) / 1000),
@@ -46,9 +62,12 @@ export function handleAdminRequest(req, res, services) {
     });
   }
 
+  // ── GET /api/tunnels/:id — auth required ──────────────────────────────────
+
   const tunnelIdMatch = path.match(/^\/api\/tunnels\/([^/]+)$/);
 
   if (method === 'GET' && tunnelIdMatch) {
+    if (!isAdminAuthorized(req, config)) return sendUnauthorized(res);
     const tunnelId = tunnelIdMatch[1];
     try {
       const tunnel = manager.getTunnel(tunnelId);
@@ -68,7 +87,21 @@ export function handleAdminRequest(req, res, services) {
     }
   }
 
-  // ── Authenticated tunnel creation routes ──────────────────────────────────
+  // ── Blocklist routes (auth required) ─────────────────────────────────────
+
+  if (path.startsWith('/api/blocklist/')) {
+    if (!isAdminAuthorized(req, config)) return sendUnauthorized(res);
+    return handleBlocklistRequest(req, res, path, method, rateLimiter, blocklist);
+  }
+
+  // ── Token rotation (auth required) ────────────────────────────────────────
+
+  if (method === 'POST' && path === '/api/admin/rotate-token') {
+    if (!isAdminAuthorized(req, config)) return sendUnauthorized(res);
+    return handleRotateToken(req, res, config, globalLog);
+  }
+
+  // ── Tunnel creation — authenticated ───────────────────────────────────────
 
   const isCreate =
     (method === 'POST' && path === '/api/tunnels') ||
@@ -127,7 +160,7 @@ export function handleAdminRequest(req, res, services) {
         sendJson(res, 200, {
           protocol: 'the-tubes/1.0',
           tunnelId: tunnel.tunnelId,
-          tunnelHost: _extractHost(services.serverConfig),
+          tunnelHost: _extractHost(config),
           tunnelPort: tunnel.port,
           publicUrl: manager.buildPublicUrl(tunnel.tunnelId),
           maxConnections: tunnel.maxConnections,
@@ -169,6 +202,77 @@ export function handleAdminRequest(req, res, services) {
   });
 }
 
+// ── Blocklist handler ─────────────────────────────────────────────────────────
+
+function handleBlocklistRequest(req, res, path, method, rateLimiter, blocklist) {
+  // GET /api/blocklist/temp — list temporarily blocked IPs
+  if (method === 'GET' && path === '/api/blocklist/temp') {
+    return sendJson(res, 200, { blocked: rateLimiter?.listBlocked() ?? [] });
+  }
+
+  // DELETE /api/blocklist/temp/:ip — unblock a temporarily blocked IP
+  const tempIpMatch = path.match(/^\/api\/blocklist\/temp\/(.+)$/);
+  if (method === 'DELETE' && tempIpMatch) {
+    const ip = decodeURIComponent(tempIpMatch[1]);
+    const removed = rateLimiter?.unblock(ip) ?? false;
+    return sendJson(res, 200, { ok: removed, ip });
+  }
+
+  // GET /api/blocklist/permanent — list permanently blocked IPs
+  if (method === 'GET' && path === '/api/blocklist/permanent') {
+    return sendJson(res, 200, { blocked: blocklist?.listPermanent() ?? [] });
+  }
+
+  // POST /api/blocklist/permanent — add IP to permanent blocklist
+  if (method === 'POST' && path === '/api/blocklist/permanent') {
+    return readBody(req).then(body => {
+      let ip;
+      try { ip = JSON.parse(body || '{}').ip; } catch {
+        return sendJson(res, 400, { error: 'Invalid JSON body' });
+      }
+      if (!ip || typeof ip !== 'string') {
+        return sendJson(res, 400, { error: '"ip" field is required' });
+      }
+      const added = blocklist?.addPermanent(ip) ?? false;
+      return sendJson(res, 200, { ok: added, ip });
+    }).catch(() => sendJson(res, 400, { error: 'Cannot read request body' }));
+  }
+
+  // DELETE /api/blocklist/permanent/:ip — remove IP from permanent blocklist
+  const permIpMatch = path.match(/^\/api\/blocklist\/permanent\/(.+)$/);
+  if (method === 'DELETE' && permIpMatch) {
+    const ip = decodeURIComponent(permIpMatch[1]);
+    const removed = blocklist?.removePermanent(ip) ?? false;
+    return sendJson(res, 200, { ok: removed, ip });
+  }
+
+  return sendJson(res, 404, { error: 'Not Found' });
+}
+
+// ── Token rotation handler ────────────────────────────────────────────────────
+
+function handleRotateToken(req, res, config, globalLog) {
+  const newToken = randomBytes(32).toString('hex');
+  const oldPrefix = config.adminToken?.slice(0, 8) ?? '(none)';
+  config.adminToken = newToken;
+
+  // Persist to file if dataDir is configured
+  if (config.dataDir) {
+    try {
+      const content = `# the-tubes admin token — keep this file private\n${newToken}\n`;
+      writeFileSync(join(config.dataDir, 'admin-token'), content, 'utf8');
+    } catch {}
+  }
+
+  globalLog?.push('server.token_rotated', { tokenPrefix: newToken.slice(0, 8) });
+
+  return sendJson(res, 200, {
+    ok: true,
+    token: newToken,
+    rotatedFrom: oldPrefix + '…',
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 function sendJson(res, status, body) {
@@ -176,6 +280,17 @@ function sendJson(res, status, body) {
   res.writeHead(status, {
     'Content-Type': 'application/json',
     'Content-Length': Buffer.byteLength(json),
+    'X-TT-Proto': 'the-tubes/1.0',
+  });
+  res.end(json);
+}
+
+function sendUnauthorized(res) {
+  const json = JSON.stringify({ error: 'Unauthorized' });
+  res.writeHead(401, {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(json),
+    'WWW-Authenticate': 'Basic realm="tt-admin"',
     'X-TT-Proto': 'the-tubes/1.0',
   });
   res.end(json);

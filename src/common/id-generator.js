@@ -1,4 +1,4 @@
-import { randomInt } from 'node:crypto';
+import { randomInt, randomBytes } from 'node:crypto';
 
 // Short readable word lists for tunnel subdomain generation
 const ADJECTIVES = [
@@ -18,13 +18,16 @@ const NOUNS = [
 ];
 
 /**
- * Generate a human-readable tunnel subdomain like "bold-raven".
+ * Generate a human-readable tunnel subdomain like "bold-raven-a3f9c1".
+ * Format: <adjective>-<noun>-<6 hex chars>
+ * Space: 40 × 40 × 16,777,216 ≈ 26 billion combinations.
  * @returns {string}
  */
 export function generateTunnelId() {
   const adj = ADJECTIVES[randomInt(ADJECTIVES.length)];
   const noun = NOUNS[randomInt(NOUNS.length)];
-  return `${adj}-${noun}`;
+  const sfx = randomBytes(3).toString('hex');
+  return `${adj}-${noun}-${sfx}`;
 }
 
 // Snowflake-like monotonic capture ID generator

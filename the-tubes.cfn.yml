@@ -43,6 +43,10 @@ Metadata:
         Parameters:
           - HmacSecret
           - HmacClockSkewToleranceS
+          - AdminToken
+          - RateLimitWindowMs
+          - RateLimitMaxHits
+          - RateLimitBlockDurationMs
     ParameterLabels:
       VpcId:
         default: "VPC ID"
@@ -92,12 +96,21 @@ Metadata:
         default: "HMAC Shared Secret (optional)"
       HmacClockSkewToleranceS:
         default: "HMAC Clock Skew Tolerance (seconds)"
+      AdminToken:
+        default: "Admin Dashboard Token (leave empty to auto-generate)"
+      RateLimitWindowMs:
+        default: "Rate Limit Window (ms)"
+      RateLimitMaxHits:
+        default: "Rate Limit Max Hits per Window"
+      RateLimitBlockDurationMs:
+        default: "Rate Limit Block Duration (ms)"
 
 Conditions:
   ShouldCreateInstance: !Equals [!Ref CreateInstance, "true"]
   IsSecureTraffic: !Equals [!Ref SecureTraffic, 'true']
   LetsEncryptEnvironmentIsProduction: !Equals [!Ref LetsEncryptEnvironment, 'production']
   HmacEnabled: !Not [!Equals [!Ref HmacSecret, ""]]
+  AdminTokenProvided: !Not [!Equals [!Ref AdminToken, ""]]
 
 Parameters:
   VpcId:
@@ -278,6 +291,38 @@ Parameters:
     Description: "Clock skew tolerance in seconds for HMAC timestamp validation (TT_HMAC_CLOCK_SKEW_TOLERANCE_S). Derived values: nonce max age = 2x this value, nonce cache TTL = 4x this value."
     ConstraintDescription: Must be a number between 10 and 600
 
+  AdminToken:
+    Type: String
+    Default: ""
+    NoEcho: true
+    Description: "Admin dashboard token for the tt-server /tubes UI (TT_ADMIN_TOKEN). Leave empty to auto-generate on first start (token is saved to /opt/the-tubes/tt/admin-token). Generate with: openssl rand -hex 32"
+    AllowedPattern: ^$|^[A-Za-z0-9_-]{8,}$
+    ConstraintDescription: Must be empty or at least 8 alphanumeric characters (a-z, A-Z, 0-9, _, -)
+
+  RateLimitWindowMs:
+    Type: Number
+    Default: 60000
+    MinValue: 1000
+    MaxValue: 3600000
+    Description: "Sliding window duration (ms) for in-process rate limiting of unknown tunnel probes (TT_RATE_LIMIT_WINDOW_MS)"
+    ConstraintDescription: Must be a number between 1000 and 3600000
+
+  RateLimitMaxHits:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    MaxValue: 1000
+    Description: "Max probe hits per IP within the rate limit window before the IP is temporarily blocked (TT_RATE_LIMIT_MAX_HITS)"
+    ConstraintDescription: Must be a number between 1 and 1000
+
+  RateLimitBlockDurationMs:
+    Type: Number
+    Default: 300000
+    MinValue: 1000
+    MaxValue: 86400000
+    Description: "Duration (ms) an IP is blocked after exceeding RateLimitMaxHits (TT_RATE_LIMIT_BLOCK_DURATION_MS)"
+    ConstraintDescription: Must be a number between 1000 and 86400000
+
 Resources:
   WebSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -290,12 +335,22 @@ Resources:
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
-          Description: HTTP traffic for public wildcard tunnel subdomains
+          Description: HTTP traffic for public wildcard tunnel subdomains (IPv4)
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIpv6: ::/0
+          Description: HTTP traffic for public wildcard tunnel subdomains (IPv6)
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
-          Description: HTTPS traffic for public wildcard tunnel subdomains
+          Description: HTTPS traffic for public wildcard tunnel subdomains (IPv4)
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIpv6: ::/0
+          Description: HTTPS traffic for public wildcard tunnel subdomains (IPv6)
       Tags:
         - Key: Name
           Value: !Sub '${AWS::StackName}-web-sg'
@@ -414,8 +469,10 @@ Resources:
           CUSTOM_DOMAIN="${ServiceName}.${DomainName}"
           [ "${LetsEncryptEnvironment}" = "production" ] && ACME_SERVER="https://acme-v02.api.letsencrypt.org/directory" || ACME_SERVER="https://acme-staging-v02.api.letsencrypt.org/directory"
 
+          # Create data directory for tt-server persistent state (admin token, blocklist)
+          mkdir -p /opt/the-tubes/tt && chmod 700 /opt/the-tubes/tt && cd /opt/the-tubes
+          
           # Create docker-compose.yml
-          mkdir -p /opt/the-tubes && cd /opt/the-tubes
           cat > docker-compose.yml << 'COMPOSE_EOF'
           services:
             traefik:
@@ -466,6 +523,8 @@ Resources:
                 - tt_net
               ports:
                 - "${PortRangeStart}-${PortRangeEnd}:${PortRangeStart}-${PortRangeEnd}"
+              volumes:
+                - /opt/the-tubes/tt:/home/thetubes/.tt
               environment:
                 - NODE_ENV=production
                 - TT_PUBLIC_PORT=${PublicPort}
@@ -486,6 +545,10 @@ Resources:
                 - TT_RETRY_AFTER_SECONDS=${RetryAfterSeconds}
                 - TT_HMAC_SECRET=${HmacSecret}
                 - TT_HMAC_CLOCK_SKEW_TOLERANCE_S=${HmacClockSkewToleranceS}
+                - TT_ADMIN_TOKEN=${AdminToken}
+                - TT_RATE_LIMIT_WINDOW_MS=${RateLimitWindowMs}
+                - TT_RATE_LIMIT_MAX_HITS=${RateLimitMaxHits}
+                - TT_RATE_LIMIT_BLOCK_DURATION_MS=${RateLimitBlockDurationMs}
               healthcheck:
                 test: ["CMD", "node", "-e", "fetch('http://localhost:${PublicPort}/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
                 interval: 30s
@@ -496,16 +559,22 @@ Resources:
                 - "traefik.enable=true"
                 # Admin API (port ${AdminPort}) - tunnel creation endpoint
                 # Rule accepts both domain name and direct IP access (security enforced by Security Group)
-                - "traefik.http.routers.tt-admin.rule=Host(`DOMAIN_PLACEHOLDER`) || PathPrefix(`/`)"
+                - "traefik.http.routers.tt-admin.rule=Host(`DOMAIN_PLACEHOLDER`)"
                 - "traefik.http.routers.tt-admin.entrypoints=admin"
                 - "traefik.http.routers.tt-admin.service=tt-admin-svc"
                 - "traefik.http.services.tt-admin-svc.loadbalancer.server.port=${AdminPort}"
                 # Public server (port 80/443) - wildcard tunnel traffic
                 - "traefik.http.routers.tt-public-http.rule=HostRegexp(`^[a-zA-Z0-9-]+[.]DOMAIN_PLACEHOLDER$`)"
                 - "traefik.http.routers.tt-public-http.entrypoints=web"
+                - "# PUBLIC_HTTP_MIDDLEWARE_PLACEHOLDER"
                 - "traefik.http.routers.tt-public-http.service=tt-public-svc"
                 - "traefik.http.routers.tt-public-http.priority=10"
                 - "traefik.http.services.tt-public-svc.loadbalancer.server.port=${PublicPort}"
+                # Rate limiting middleware — applied to all public tunnel traffic
+                - "traefik.http.middlewares.public-rl.ratelimit.average=100"
+                - "traefik.http.middlewares.public-rl.ratelimit.burst=50"
+                - "traefik.http.middlewares.public-rl.ratelimit.period=1m"
+                - "traefik.http.middlewares.public-rl.ratelimit.sourcecriterion.ipstrategy.depth=1"
                 # HTTPS labels placeholder
                 - "# HTTPS_LABELS_PLACEHOLDER"
                 # tt-server admin UI on dashboard port
@@ -520,12 +589,14 @@ Resources:
             traefik-data:
           COMPOSE_EOF
 
-          # Conditionally add HTTPS Traefik labels if SecureTraffic is enabled
+          # Conditionally add HTTPS Traefik labels and rate-limiting middlewares
           if [ "${SecureTraffic}" = "true" ]; then
-            sed -i '/# HTTPS_LABELS_PLACEHOLDER/c\      - "traefik.http.routers.tt-admin.tls.certresolver=letsencrypt"\n      - "traefik.http.routers.tt-admin.tls=true"\n      - "traefik.http.routers.tt-public-http.middlewares=https-redirect"\n      - "traefik.http.routers.tt-public.rule=HostRegexp(`^[a-zA-Z0-9-]+[.]DOMAIN_PLACEHOLDER$`)"\n      - "traefik.http.routers.tt-public.entrypoints=websecure"\n      - "traefik.http.routers.tt-public.service=tt-public-svc"\n      - "traefik.http.routers.tt-public.tls=true"\n      - "traefik.http.routers.tt-public.tls.certresolver=letsencrypt"\n      - "traefik.http.routers.tt-public.tls.domains[0].main=DOMAIN_PLACEHOLDER"\n      - "traefik.http.routers.tt-public.tls.domains[0].sans=*.DOMAIN_PLACEHOLDER"\n      - "traefik.http.routers.tt-public.priority=10"\n      - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"\n      - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"' docker-compose.yml
-            sed -i '/# DASHBOARD_TLS_PLACEHOLDER/c\      - "traefik.http.routers.traefik-dashboard.tls=true"\n      - "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"' docker-compose.yml
-            sed -i '/# SERVER_ADMIN_TLS_PLACEHOLDER/c\      - "traefik.http.routers.tt-server-admin.tls=true"\n      - "traefik.http.routers.tt-server-admin.tls.certresolver=letsencrypt"' docker-compose.yml
+            sed -i '/# PUBLIC_HTTP_MIDDLEWARE_PLACEHOLDER/c\                - "traefik.http.routers.tt-public-http.middlewares=https-redirect,public-rl"' docker-compose.yml
+            sed -i '/# HTTPS_LABELS_PLACEHOLDER/c\                - "traefik.http.routers.tt-admin.tls=true"\n                - "traefik.http.routers.tt-admin.tls.certresolver=letsencrypt"\n                - "traefik.http.routers.tt-public.rule=HostRegexp(`^[a-zA-Z0-9-]+[.]DOMAIN_PLACEHOLDER$`)"\n                - "traefik.http.routers.tt-public.entrypoints=websecure"\n                - "traefik.http.routers.tt-public.middlewares=public-rl"\n                - "traefik.http.routers.tt-public.service=tt-public-svc"\n                - "traefik.http.routers.tt-public.tls=true"\n                - "traefik.http.routers.tt-public.tls.certresolver=letsencrypt"\n                - "traefik.http.routers.tt-public.tls.domains[0].main=DOMAIN_PLACEHOLDER"\n                - "traefik.http.routers.tt-public.tls.domains[0].sans=*.DOMAIN_PLACEHOLDER"\n                - "traefik.http.routers.tt-public.priority=10"\n                - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"\n                - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"' docker-compose.yml
+            sed -i '/# DASHBOARD_TLS_PLACEHOLDER/c\                - "traefik.http.routers.traefik-dashboard.tls=true"\n                - "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"' docker-compose.yml
+            sed -i '/# SERVER_ADMIN_TLS_PLACEHOLDER/c\                - "traefik.http.routers.tt-server-admin.tls=true"\n                - "traefik.http.routers.tt-server-admin.tls.certresolver=letsencrypt"' docker-compose.yml
           else
+            sed -i '/# PUBLIC_HTTP_MIDDLEWARE_PLACEHOLDER/c\                - "traefik.http.routers.tt-public-http.middlewares=public-rl"' docker-compose.yml
             sed -i '/# HTTPS_LABELS_PLACEHOLDER/d' docker-compose.yml
             sed -i '/# DASHBOARD_TLS_PLACEHOLDER/d' docker-compose.yml
             sed -i '/# SERVER_ADMIN_TLS_PLACEHOLDER/d' docker-compose.yml
@@ -671,9 +742,18 @@ Outputs:
 
   SecurityNote:
     Description: Security configuration details
-    Value: !Sub 'Port ${DashboardPort} (Traefik /dashboard and tt-server /tubes), ${AdminPort} (admin API) and ${PortRangeStart}-${PortRangeEnd} (expose client TCP) are initially restricted to 127.0.0.1/32. Update Security Group "${AWS::StackName}-tt-client-sg" manually to allow your IPs. Ports 80/443 are open for wildcard tunnel subdomains only.'
+    Value: !Sub 'Port ${DashboardPort} (Traefik /dashboard and tt-server /tubes), ${AdminPort} (admin API) and ${PortRangeStart}-${PortRangeEnd} (expose client TCP) are initially restricted to 127.0.0.1/32. Update Security Group "${AWS::StackName}-tt-client-sg" manually to allow your IPs. Ports 80/443 are open for wildcard tunnel subdomains (IPv4+IPv6). Traefik rate limiting: 100 req/min avg, burst 50. In-process rate limiting: ${RateLimitMaxHits} hits/${RateLimitWindowMs}ms then ${RateLimitBlockDurationMs}ms block.'
     Export:
       Name: !Sub '${AWS::StackName}-SecurityNote'
+
+  AdminTokenNote:
+    Description: Admin dashboard token information
+    Value: !If
+      - AdminTokenProvided
+      - 'Admin token was set via AdminToken parameter (saved to /opt/the-tubes/tt/admin-token). Use X-TT-Admin-Token header to authenticate.'
+      - !Sub 'Admin token will be auto-generated on first start and saved to /opt/the-tubes/tt/admin-token. Check container logs for the token, or SSH to the instance and run: cat /opt/the-tubes/tt/admin-token'
+    Export:
+      Name: !Sub '${AWS::StackName}-AdminTokenNote'
 
   SecurityGroupId:
     Description: Security Group ID for expose client and admin access - update ingress rules manually to allow your IPs

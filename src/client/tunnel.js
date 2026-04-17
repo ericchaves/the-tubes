@@ -206,12 +206,15 @@ export class ClientTunnel extends EventEmitter {
         }
 
         if (res.status === 401) {
+          this.emit('tunnel.token_missing', { code: 401, reason: body.error || res.statusText });
+          this.emit('auth.rejected', { code: 401, reason: body.error || res.statusText });
           throw Object.assign(new Error(`Authentication failed: ${body.error || res.statusText}`), { fatal: true });
         }
         if (res.status === 400) {
           throw Object.assign(new Error(`Bad request: ${body.error || res.statusText}`), { fatal: true });
         }
         if (res.status === 403) {
+          this.emit('auth.rejected', { code: 403, reason: body.error || res.statusText });
           throw Object.assign(new Error(`Forbidden: ${body.error || res.statusText}`), { fatal: true });
         }
         if (res.status === 409) {

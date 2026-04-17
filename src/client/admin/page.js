@@ -140,6 +140,8 @@ const TYPE_META = {
   'replay.step.error':   ['t-error',    'STEP ERROR'],
   'replay.completed':    ['t-replay',   'REPLAY DONE'],
   'replay.error':        ['t-error',    'REPLAY ERR'],
+  'auth.rejected':       ['t-error',    'AUTH REJECTED'],
+  'tunnel.token_missing':['t-failure',  'TOKEN MISSING'],
 };
 
 const EVENT_GROUPS = {
@@ -184,6 +186,8 @@ function eventSummary(ev){
     case 'replay.step.error': return '['+(ev.stepIndex+1)+'/'+ev.total+'] '+ev.method+' '+ev.url+': '+ev.error;
     case 'replay.completed':  return (ev.manifest??'')+' done in '+ev.durationMs+'ms';
     case 'replay.error':      return (ev.manifest??'')+': '+ev.error;
+    case 'auth.rejected':     return 'code='+(ev.code??'?')+' '+(ev.reason??'');
+    case 'tunnel.token_missing': return 'server requires authentication (check --hmac-secret or server config)';
     default: return JSON.stringify(ev).slice(0,80);
   }
 }
@@ -511,6 +515,24 @@ document.querySelectorAll('section h2.collapsible-trigger').forEach(h2 => {
   connect();
 })();
 
+// ── Clear log button ───────────────────────────────────────────────────────────
+;(function(){
+  const btn = document.getElementById('btn-clear-log');
+  if (!btn) return;
+  btn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    while (logEl.firstChild) logEl.removeChild(logEl.firstChild);
+    const ph = document.createElement('div');
+    ph.className = 'empty'; ph.textContent = 'No events yet';
+    logEl.appendChild(ph);
+    filterActive = 'all';
+    document.querySelectorAll('.filter-btn[data-filter]').forEach(b => {
+      b.classList.toggle('active', b.dataset.filter === 'all');
+    });
+    updateLogCount();
+  });
+})();
+
 // ── Initial render ─────────────────────────────────────────────────────────────
 renderStatus();
 renderHealth();
@@ -606,8 +628,11 @@ export function adminPage({ filteredConfig }) {
   <section class="log-section">
     <h2 class="collapsible-trigger" data-collapse="activity-body">
       Activity
-      <span id="log-count" style="font-weight:400;color:var(--dim);font-size:11px"></span>
-      <span class="toggle">▾</span>
+      <span id="log-count" style="font-weight:400;color:var(--dim);font-size:11px;margin-left:4px"></span>
+      <span style="display:flex;gap:4px;margin-left:auto">
+        <button class="filter-btn" id="btn-clear-log" style="border-radius:4px;padding:1px 7px;font-size:12px" title="Clear log">✕</button>
+      </span>
+      <span class="toggle" style="margin-left:6px">▾</span>
     </h2>
     <div id="activity-body" class="collapsible">
       <div class="log-filters">

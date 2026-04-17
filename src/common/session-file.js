@@ -6,12 +6,24 @@ import { randomBytes } from 'node:crypto';
 const DEFAULT_SESSION_FILE = resolve(homedir(), '.tt', 'session');
 
 /**
- * Resolve the session file path, expanding ~ if needed.
+ * Resolve the session token file path, expanding ~ if needed.
  */
 function resolvePath(filePath) {
   const p = filePath ?? DEFAULT_SESSION_FILE;
   if (p.startsWith('~')) return resolve(homedir(), p.slice(2));
   return resolve(p);
+}
+
+/**
+ * Parse a token file: first non-empty, non-comment line wins.
+ * Lines starting with '#' are ignored (comments).
+ * @param {string} content
+ * @returns {string|null}
+ */
+function parseTokenFile(content) {
+  return content.split('\n')
+    .map(l => l.trim())
+    .find(l => l && !l.startsWith('#')) ?? null;
 }
 
 /**
@@ -22,7 +34,7 @@ function resolvePath(filePath) {
 export function loadSessionToken(filePath) {
   const p = resolvePath(filePath);
   try {
-    return readFileSync(p, 'utf8').trim() || null;
+    return parseTokenFile(readFileSync(p, 'utf8'));
   } catch {
     return null;
   }
@@ -37,7 +49,8 @@ export function generateAndSaveSessionToken(filePath) {
   const p = resolvePath(filePath);
   const token = randomBytes(16).toString('hex');
   mkdirSync(dirname(p), { recursive: true });
-  writeFileSync(p, token, { encoding: 'utf8', mode: 0o600 });
+  const content = `# the-tubes session token — keep this file private\n${token}\n`;
+  writeFileSync(p, content, { encoding: 'utf8', mode: 0o600 });
   try { chmodSync(p, 0o600); } catch { /* non-critical */ }
   return token;
 }
@@ -55,7 +68,7 @@ export function resolveSessionToken(filePath) {
 }
 
 /**
- * Delete the session file (reset).
+ * Delete the session token file (reset).
  * @param {string} [filePath]
  */
 export function resetSessionFile(filePath) {

@@ -17,9 +17,10 @@ const CSS = `
 }
 body{background:var(--bg);color:var(--text);font:14px/1.5 'SF Mono',ui-monospace,monospace;min-height:100vh}
 a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}
-header{display:flex;align-items:center;gap:12px;padding:12px 20px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10}
+header{display:flex;align-items:center;gap:12px;padding:12px 20px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:10;flex-wrap:wrap}
 header h1{font-size:16px;font-weight:600}
 header .dim{color:var(--dim);font-size:12px}
+header nav{display:flex;gap:12px;font-size:12px;margin-left:8px}
 .sse-dot{width:8px;height:8px;border-radius:50%;background:var(--gray);margin-left:auto;flex-shrink:0}
 .sse-dot.ok{background:var(--green);box-shadow:0 0 6px var(--green)}
 .sse-dot.err{background:var(--red)}
@@ -32,7 +33,7 @@ section h2 .toggle{margin-left:auto;color:var(--dim);font-size:10px}
 .collapsible.collapsed{max-height:0!important}
 .kv{display:grid;grid-template-columns:220px 1fr;border-top:1px solid var(--border)}
 .kv dt{padding:6px 14px;color:var(--dim);font-size:12px;border-bottom:1px solid var(--border)}
-.kv dd{padding:6px 14px;border-bottom:1px solid var(--border)}
+.kv dd{padding:6px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;word-break:break-all}
 table{width:100%;border-collapse:collapse}
 th{text-align:left;padding:7px 14px;font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;border-bottom:1px solid var(--border)}
 td{padding:7px 14px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle}
@@ -54,13 +55,25 @@ tr:hover td{background:var(--surface2)}
 .t-disconnected,.t-aborted,.t-ws-closed{color:var(--orange)}
 .t-expired,.t-destroyed,.t-failed,.t-ws-failed{color:var(--red)}
 .t-received{color:var(--gray)}.t-delivered{color:var(--cyan)}.t-ws{color:var(--purple)}
+.t-blocked{color:var(--red)}.t-unblocked{color:var(--gray)}.t-banned{color:var(--orange)}
+.t-unbanned{color:var(--green)}.t-rotated{color:var(--blue)}
 .stats{display:flex;gap:20px;padding:10px 14px;font-size:12px;color:var(--dim);border-bottom:1px solid var(--border);flex-wrap:wrap}
 .stats strong{color:var(--text)}
-.actions{padding:10px 14px;display:flex;gap:8px;border-bottom:1px solid var(--border)}
+.actions{padding:10px 14px;display:flex;gap:8px;border-bottom:1px solid var(--border);flex-wrap:wrap;align-items:center}
 button{padding:5px 14px;border-radius:4px;border:1px solid var(--border);background:var(--surface2);color:var(--text);cursor:pointer;font-size:13px;font-family:inherit}
 button:hover{border-color:var(--blue);color:var(--blue)}
 button.danger:hover{border-color:var(--red);color:var(--red)}
+.btn-icon{padding:2px 7px;border-radius:4px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer;font-size:13px;font-family:inherit;line-height:1.4}
+.btn-icon:hover{border-color:var(--blue);color:var(--blue)}
+.btn-icon.danger:hover{border-color:var(--red);color:var(--red)}
+.token-val{font-family:inherit;font-size:12px;color:var(--text);letter-spacing:.04em}
+.token-feedback{font-size:11px;color:var(--green);opacity:0;transition:opacity .3s}
+.token-feedback.show{opacity:1}
+.input-row{display:flex;gap:6px;padding:10px 14px;border-bottom:1px solid var(--border);align-items:center;flex-wrap:wrap}
+.input-row input{flex:1;min-width:160px;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font:13px 'SF Mono',ui-monospace,monospace;outline:none}
+.input-row input:focus{border-color:var(--blue)}
 .empty{color:var(--dim);padding:20px;text-align:center;font-size:13px}
+.section-actions{display:flex;gap:4px;margin-left:auto}
 `;
 
 // All client-side logic is in a single IIFE. No external data is passed via
@@ -68,34 +81,38 @@ button.danger:hover{border-color:var(--red);color:var(--red)}
 const CLIENT_SHARED_JS = `
 function esc(s){const d=document.createElement('span');d.textContent=String(s??'');return d.textContent}
 const TYPE_META={
-  'tunnel.created':      ['t-created',    'CREATED'],
-  'tunnel.connected':    ['t-connected',  'CONNECTED'],
-  'tunnel.disconnected': ['t-disconnected','DISCONNECTED'],
-  'tunnel.reconnected':  ['t-reconnected','RECONNECTED'],
-  'tunnel.window_expired':['t-expired',   'WIN EXPIRED'],
-  'tunnel.destroyed':    ['t-destroyed',  'DESTROYED'],
-  'request.received':    ['t-received',   'REQ →'],
-  'request.waiting':     ['t-received',   'WAITING'],
-  'request.delivered':   ['t-delivered',  'DELIVERED'],
-  'request.failed':      ['t-failed',     'FAILED'],
-  'response.complete':   ['t-complete',   'RESPONSE'],
-  'response.aborted':    ['t-aborted',    'ABORTED'],
-  'ws.received':         ['t-ws',         'WS →'],
-  'ws.delivered':        ['t-ws',         'WS ↑'],
-  'ws.failed':           ['t-ws-failed',  'WS ERR'],
-  'ws.closed':           ['t-ws-closed',  'WS END'],
-  'server.error':        ['t-failed',     'SERVER ERR'],
+  'tunnel.created':         ['t-created',    'CREATED'],
+  'tunnel.connected':       ['t-connected',  'CONNECTED'],
+  'tunnel.disconnected':    ['t-disconnected','DISCONNECTED'],
+  'tunnel.reconnected':     ['t-reconnected','RECONNECTED'],
+  'tunnel.window_expired':  ['t-expired',    'WIN EXPIRED'],
+  'tunnel.destroyed':       ['t-destroyed',  'DESTROYED'],
+  'request.received':       ['t-received',   'REQ →'],
+  'request.waiting':        ['t-received',   'WAITING'],
+  'request.delivered':      ['t-delivered',  'DELIVERED'],
+  'request.failed':         ['t-failed',     'FAILED'],
+  'response.complete':      ['t-complete',   'RESPONSE'],
+  'response.aborted':       ['t-aborted',    'ABORTED'],
+  'ws.received':            ['t-ws',         'WS →'],
+  'ws.delivered':           ['t-ws',         'WS ↑'],
+  'ws.failed':              ['t-ws-failed',  'WS ERR'],
+  'ws.closed':              ['t-ws-closed',  'WS END'],
+  'server.error':           ['t-failed',     'SERVER ERR'],
+  'ip.blocked':             ['t-blocked',    'IP BLOCKED'],
+  'ip.unblocked':           ['t-unblocked',  'IP UNBLOCKED'],
+  'ip.added_permanent':     ['t-banned',     'IP BANNED'],
+  'ip.removed_permanent':   ['t-unbanned',   'IP UNBANNED'],
+  'server.token_rotated':   ['t-rotated',    'TOKEN ROTATED'],
+  'server.request_blocked': ['t-blocked',    'BLOCKED'],
 };
 function fmtBytes(n){if(!n)return'0 B';if(n<1024)return n+' B';if(n<1048576)return(n/1024).toFixed(1)+' KB';return(n/1048576).toFixed(1)+' MB'}
 function fmtTime(ts){const d=new Date(ts);return d.toTimeString().slice(0,8)+'.'+String(d.getMilliseconds()).padStart(3,'0')}
 function eventSummary(e){
-  // Returns a plain-text summary of the event for display.
-  // All values come from server-side data — sanitised via textContent below.
   switch(e.type){
     case'tunnel.created':return'port '+e.port+'  max '+e.maxConnections+' conns  token '+e.sessionTokenPrefix+'…';
-    case'tunnel.connected':return e.socketCount+' socket'+(e.socketCount!==1?'s':'')+' in pool';
+    case'tunnel.connected':return e.socketCount+' socket'+(e.socketCount!==1?'s':'')+' in pool'+(e.clientIp?' from '+e.clientIp:'');
     case'tunnel.disconnected':return'reconnect window '+e.reconnectWindowMs+'ms';
-    case'tunnel.reconnected':return e.socketCount+' socket'+(e.socketCount!==1?'s':'')+' in pool';
+    case'tunnel.reconnected':return e.socketCount+' socket'+(e.socketCount!==1?'s':'')+' in pool'+(e.clientIp?' from '+e.clientIp:'');
     case'tunnel.window_expired':return'no reconnect within window — tunnel closed';
     case'tunnel.destroyed':return'';
     case'request.received':return(e.method||'?')+' '+e.path+'  from '+(e.remoteAddr||'?');
@@ -113,11 +130,18 @@ function eventSummary(e){
       if(e.method)parts.push(e.method);
       if(e.host)parts.push(e.host);
       if(e.path&&e.path!=='/')parts.push(e.path);
+      if(e.clientIp)parts.push('from '+e.clientIp);
       if(e.reason)parts.push('reason: '+e.reason);
       if(e.statusSent)parts.push('→ '+e.statusSent);
       if(e.detail)parts.push('('+e.detail+')');
       return parts.join('  ');
     }
+    case'ip.blocked':return e.ip+'  threshold='+e.threshold+'  window='+Math.round((e.windowMs||0)/1000)+'s  until='+new Date(e.blockedUntil||0).toLocaleTimeString();
+    case'ip.unblocked':return e.ip+'  reason='+e.reason;
+    case'ip.added_permanent':return e.ip;
+    case'ip.removed_permanent':return e.ip;
+    case'server.token_rotated':return'new prefix: '+e.tokenPrefix+'…';
+    case'server.request_blocked':return e.ip+'  '+(e.method||'?')+' '+(e.host||'')+'  reason='+e.reason;
     default:return e.type;
   }
 }
@@ -129,22 +153,19 @@ function makeSpan(text,cls){const s=document.createElement('span');if(cls)s.clas
  * @param {boolean} showTunnel - whether to show the tunnelId column
  */
 function makeLogRow(e, showTunnel) {
-  const meta = TYPE_META[e.type] || ['','?'];
+  const meta = TYPE_META[e.type] || ['t-received','?'];
   const row = document.createElement('div');
   row.className = 'log-row';
   row.style.gridTemplateColumns = showTunnel ? '90px 130px 110px 1fr' : '90px 110px 1fr';
-  row.title = JSON.stringify(e, null, 2); // tooltip — browser escapes this automatically
+  row.title = JSON.stringify(e, null, 2);
 
-  // Timestamp
   const ts = document.createElement('span');
   ts.className = 'log-ts';
   ts.textContent = fmtTime(e.ts);
   row.appendChild(ts);
 
-  // Tunnel ID link (global log only)
   if (showTunnel) {
     if (e.tunnelId === '__global__') {
-      // Server-level event — no per-tunnel page to link to
       const span = document.createElement('span');
       span.className = 'log-detail';
       span.textContent = 'server';
@@ -152,18 +173,16 @@ function makeLogRow(e, showTunnel) {
     } else {
       const a = document.createElement('a');
       a.href = '/tubes/' + encodeURIComponent(e.tunnelId);
-      a.textContent = e.tunnelId; // textContent escapes automatically
+      a.textContent = e.tunnelId;
       row.appendChild(a);
     }
   }
 
-  // Type badge
   const typeEl = document.createElement('span');
   typeEl.className = 'log-type ' + meta[0];
   typeEl.textContent = meta[1];
   row.appendChild(typeEl);
 
-  // Detail (plain text — textContent is safe)
   const detail = document.createElement('span');
   detail.className = 'log-detail';
   detail.textContent = eventSummary(e);
@@ -186,26 +205,44 @@ function setupCollapsible() {
   document.querySelectorAll('section h2.collapsible-trigger').forEach(h2 => {
     const body = document.getElementById(h2.dataset.collapse);
     if (!body) return;
-    h2.addEventListener('click', () => {
+    h2.addEventListener('click', (ev) => {
+      // Don't toggle if click was on an action button inside h2
+      if (ev.target.closest('.section-actions')) return;
       const collapsed = body.classList.toggle('collapsed');
       h2.querySelector('.toggle').textContent = collapsed ? '▸' : '▾';
     });
+  });
+}
+function setupClearLog(btnId, logId, placeholder) {
+  const btn = document.getElementById(btnId);
+  const log = document.getElementById(logId);
+  if (!btn || !log) return;
+  btn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    while (log.firstChild) log.removeChild(log.firstChild);
+    if (placeholder) {
+      const el = document.createElement('div');
+      el.className = 'empty';
+      el.textContent = placeholder;
+      log.appendChild(el);
+    }
+    const countEl = log.closest('section')?.querySelector('[id$="-count"]');
+    if (countEl) countEl.textContent = '0';
   });
 }
 `;
 
 /**
  * Generate the HTML for GET /tubes (overview page).
- * The config object is serialised via JSON — keys and values are
- * hardcoded strings from our own config module, not user input.
  *
- * @param {object} filteredConfig - server config with secrets removed
+ * @param {object} filteredConfig - server config with secrets removed (adminToken excluded)
+ * @param {string} adminToken     - the actual admin token (shown masked in the UI)
  * @returns {string}
  */
-export function adminIndexPage(filteredConfig) {
-  // Build config rows using DOM-safe data: config keys/values are always
-  // controlled by our own code (not user-supplied at this point).
+export function adminIndexPage(filteredConfig, adminToken) {
   const configEntries = JSON.stringify(Object.entries(filteredConfig));
+  // Inject token safely via JSON — never as raw HTML
+  const tokenJson = JSON.stringify(adminToken ?? '');
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -218,6 +255,10 @@ export function adminIndexPage(filteredConfig) {
 <body>
 <header>
   <h1>the tubes</h1>
+  <nav>
+    <a href="/tubes">tunnels</a>
+    <a href="/tubes/blocklist">blocklist</a>
+  </nav>
   <span class="dim" id="uptime"></span>
   <span class="sse-dot" id="sse-dot"></span>
 </header>
@@ -236,7 +277,13 @@ export function adminIndexPage(filteredConfig) {
     </div>
   </section>
   <section>
-    <h2 class="collapsible-trigger" data-collapse="activity-wrap">Server activity <span class="toggle">▾</span></h2>
+    <h2 class="collapsible-trigger" data-collapse="activity-wrap">
+      Server activity
+      <span class="section-actions">
+        <button class="btn-icon danger" id="btn-clear-log" title="Clear log">✕</button>
+      </span>
+      <span class="toggle">▾</span>
+    </h2>
     <div id="activity-wrap" class="collapsible">
       <div class="log" id="event-log">
         <div class="empty">Waiting for events…</div>
@@ -246,17 +293,85 @@ export function adminIndexPage(filteredConfig) {
   <section>
     <h2 class="collapsible-trigger" data-collapse="config-wrap">Server configuration <span class="toggle">▸</span></h2>
     <div id="config-wrap" class="collapsible collapsed">
-      <dl class="kv" id="config-kv"></dl>
+      <dl class="kv" id="config-kv">
+        <dt>Admin Token</dt>
+        <dd>
+          <span class="token-val" id="token-display"></span>
+          <button class="btn-icon" id="btn-token-reveal" title="Reveal / hide token">👁</button>
+          <button class="btn-icon" id="btn-token-copy" title="Copy token">📋</button>
+          <button class="btn-icon" id="btn-token-rotate" title="Rotate token">🔄</button>
+          <span class="token-feedback" id="token-feedback"></span>
+        </dd>
+      </dl>
+      <dl class="kv" id="config-kv-rest"></dl>
     </div>
   </section>
 </main>
 <script>
 ${CLIENT_SHARED_JS}
 
-// Populate config table using DOM APIs
+// ── Admin token UI ────────────────────────────────────────────────────────────
+;(function() {
+  let token = ${tokenJson};
+  let revealed = false;
+  const display = document.getElementById('token-display');
+  const feedback = document.getElementById('token-feedback');
+
+  function mask(t) { return t ? t.slice(0,8)+'…'+t.slice(-4) : '(none)'; }
+  function render() { display.textContent = revealed ? token : mask(token); }
+  render();
+
+  function showFeedback(msg, color) {
+    feedback.textContent = msg;
+    feedback.style.color = color || 'var(--green)';
+    feedback.classList.add('show');
+    setTimeout(() => feedback.classList.remove('show'), 2000);
+  }
+
+  document.getElementById('btn-token-reveal').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    revealed = !revealed;
+    render();
+  });
+
+  document.getElementById('btn-token-copy').addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    navigator.clipboard?.writeText(token).then(
+      () => showFeedback('Copied!'),
+      () => showFeedback('Copy failed', 'var(--red)')
+    );
+  });
+
+  document.getElementById('btn-token-rotate').addEventListener('click', async (ev) => {
+    ev.stopPropagation();
+    if (!confirm('Rotate the admin token?\\nAll existing sessions using the current token will stop working.')) return;
+    try {
+      const res = await fetch('/api/admin/rotate-token', {
+        method: 'POST',
+        headers: { 'X-TT-Admin-Token': token },
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { showFeedback(body.error || 'Error', 'var(--red)'); return; }
+      token = body.token;
+      revealed = true;
+      render();
+      showFeedback('Token rotated — copy it now!');
+    } catch (err) {
+      showFeedback(err.message, 'var(--red)');
+    }
+  });
+
+  // Update token when server.token_rotated SSE arrives
+  window._onTokenRotated = (newPrefix) => {
+    showFeedback('Token rotated elsewhere — refresh to get new token', 'var(--orange)');
+    display.textContent = newPrefix + '…(rotated)';
+  };
+})();
+
+// ── Config table (remaining entries) ─────────────────────────────────────────
 ;(function() {
   const entries = ${configEntries};
-  const kv = document.getElementById('config-kv');
+  const kv = document.getElementById('config-kv-rest');
   for (const [k, v] of entries) {
     const dt = document.createElement('dt');
     dt.textContent = k;
@@ -384,19 +499,31 @@ function handleEvent(e) {
       break;
   }
 
-  // Append to server activity log.
-  // Shows: tunnel lifecycle events, delivery failures, and server-level errors.
-  // Normal request/response traffic is available on each tunnel's detail page.
+  // Security events always shown in server activity log
+  const SECURITY_EVENTS = new Set([
+    'ip.blocked','ip.unblocked','ip.added_permanent','ip.removed_permanent',
+    'server.token_rotated','server.request_blocked',
+  ]);
+  // Tunnel lifecycle events shown in server activity log
   const ADMIN_EVENTS = new Set([
     'tunnel.created','tunnel.connected','tunnel.disconnected',
     'tunnel.reconnected','tunnel.window_expired','tunnel.destroyed',
     'request.failed','response.aborted','ws.failed',
   ]);
-  if (e.type === 'server.error' || (e.tunnelId !== '__global__' && ADMIN_EVENTS.has(e.type))) {
+  const showInLog = e.type === 'server.error'
+    || SECURITY_EVENTS.has(e.type)
+    || (e.tunnelId !== '__global__' && ADMIN_EVENTS.has(e.type));
+
+  if (showInLog) {
     const log = document.getElementById('event-log');
     const placeholder = log.querySelector('.empty');
     if (placeholder) log.removeChild(placeholder);
     prependRow(log, makeLogRow(e, true));
+  }
+
+  // Notify token UI on rotation
+  if (e.type === 'server.token_rotated') {
+    window._onTokenRotated?.(e.tokenPrefix);
   }
 }
 
@@ -411,6 +538,7 @@ setInterval(() => {
 
 setupSse('/tubes/events', handleEvent, document.getElementById('sse-dot'));
 setupCollapsible();
+setupClearLog('btn-clear-log', 'event-log', 'Waiting for events…');
 </script>
 </body>
 </html>`;
@@ -466,7 +594,13 @@ export function adminTunnelPage(tunnelId) {
     </div>
   </section>
   <section>
-    <h2 class="collapsible-trigger" data-collapse="eventlog-wrap">Event log (<span id="event-count">0</span> events) <span class="toggle">▾</span></h2>
+    <h2 class="collapsible-trigger" data-collapse="eventlog-wrap">
+      Event log (<span id="event-count">0</span> events)
+      <span class="section-actions">
+        <button class="btn-icon danger" id="btn-clear-log" title="Clear log">✕</button>
+      </span>
+      <span class="toggle">▾</span>
+    </h2>
     <div id="eventlog-wrap" class="collapsible">
       <div class="log" id="event-log">
         <div class="empty">Waiting for events…</div>
@@ -567,6 +701,239 @@ document.getElementById('btn-disconnect').addEventListener('click', async () => 
 
 setupSse('/tubes/${tunnelIdUrl}/events', handleEvent, document.getElementById('sse-dot'));
 setupCollapsible();
+setupClearLog('btn-clear-log', 'event-log', 'Waiting for events…');
+</script>
+</body>
+</html>`;
+}
+
+/**
+ * Generate the HTML for GET /tubes/blocklist.
+ *
+ * @param {object} opts
+ * @param {Array<{ip: string, blockedUntil: string}>} opts.tempBlocked
+ * @param {string[]} opts.permBlocked
+ * @returns {string}
+ */
+export function adminBlocklistPage({ tempBlocked = [], permBlocked = [] }) {
+  const tempJson = JSON.stringify(tempBlocked);
+  const permJson = JSON.stringify(permBlocked);
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>the tubes — blocklist</title>
+<style>${CSS}
+.bl-table td:last-child{text-align:right}
+</style>
+</head>
+<body>
+<header>
+  <a href="/tubes">← tunnels</a>
+  <h1 style="margin-left:8px">Blocklist</h1>
+  <nav style="margin-left:12px">
+    <a href="/tubes">tunnels</a>
+    <a href="/tubes/blocklist">blocklist</a>
+  </nav>
+  <span class="sse-dot" id="sse-dot" style="margin-left:auto"></span>
+</header>
+<main>
+
+  <!-- Temporary blocks (rate-limiter) -->
+  <section>
+    <h2 class="collapsible-trigger" data-collapse="temp-wrap">
+      Temporary blocks (<span id="temp-count">0</span>)
+      <span class="toggle">▾</span>
+    </h2>
+    <div id="temp-wrap" class="collapsible">
+      <table class="bl-table">
+        <thead><tr><th>IP</th><th>Blocked until</th><th></th></tr></thead>
+        <tbody id="temp-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- Permanent blocks -->
+  <section>
+    <h2 class="collapsible-trigger" data-collapse="perm-wrap">
+      Permanent blocks (<span id="perm-count">0</span>)
+      <span class="toggle">▾</span>
+    </h2>
+    <div id="perm-wrap" class="collapsible">
+      <div class="input-row">
+        <input id="perm-ip-input" type="text" placeholder="IP address to block (e.g. 1.2.3.4 or ::1)" autocomplete="off" spellcheck="false">
+        <button id="btn-perm-add">Add</button>
+        <span id="perm-feedback" class="token-feedback"></span>
+      </div>
+      <table class="bl-table">
+        <thead><tr><th>IP</th><th></th></tr></thead>
+        <tbody id="perm-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+<script>
+(function(){
+
+let tempBlocked = ${tempJson};
+let permBlocked = ${permJson};
+
+function fmtUntil(iso) {
+  try { return new Date(iso).toLocaleTimeString(); } catch { return iso; }
+}
+
+function showFeedback(id, msg, color) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = color || 'var(--green)';
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 3000);
+}
+
+function clearTbody(id) {
+  const t = document.getElementById(id);
+  while (t.firstChild) t.removeChild(t.firstChild);
+  return t;
+}
+
+// ── Render temp ───────────────────────────────────────────────────────────────
+function renderTemp() {
+  const tbody = clearTbody('temp-body');
+  document.getElementById('temp-count').textContent = tempBlocked.length;
+  if (!tempBlocked.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 3; td.className = 'empty'; td.textContent = 'None';
+    tr.appendChild(td); tbody.appendChild(tr);
+    return;
+  }
+  for (const b of tempBlocked) {
+    const tr = document.createElement('tr');
+    const tdIp = document.createElement('td'); tdIp.textContent = b.ip;
+    const tdUntil = document.createElement('td'); tdUntil.textContent = fmtUntil(b.blockedUntil);
+    const tdAct = document.createElement('td');
+    const btn = document.createElement('button');
+    btn.className = 'btn-icon danger'; btn.textContent = 'Unblock';
+    btn.addEventListener('click', () => unblockTemp(b.ip));
+    tdAct.appendChild(btn);
+    tr.appendChild(tdIp); tr.appendChild(tdUntil); tr.appendChild(tdAct);
+    tbody.appendChild(tr);
+  }
+}
+
+// ── Render perm ───────────────────────────────────────────────────────────────
+function renderPerm() {
+  const tbody = clearTbody('perm-body');
+  document.getElementById('perm-count').textContent = permBlocked.length;
+  if (!permBlocked.length) {
+    const tr = document.createElement('tr');
+    const td = document.createElement('td');
+    td.colSpan = 2; td.className = 'empty'; td.textContent = 'None';
+    tr.appendChild(td); tbody.appendChild(tr);
+    return;
+  }
+  for (const ip of permBlocked) {
+    const tr = document.createElement('tr');
+    const tdIp = document.createElement('td'); tdIp.textContent = ip;
+    const tdAct = document.createElement('td');
+    const btn = document.createElement('button');
+    btn.className = 'btn-icon danger'; btn.textContent = 'Remove';
+    btn.addEventListener('click', () => removePerm(ip));
+    tdAct.appendChild(btn);
+    tr.appendChild(tdIp); tr.appendChild(tdAct);
+    tbody.appendChild(tr);
+  }
+}
+
+// ── Actions ───────────────────────────────────────────────────────────────────
+async function unblockTemp(ip) {
+  try {
+    const res = await fetch('/api/blocklist/temp/' + encodeURIComponent(ip), { method: 'DELETE' });
+    if (!res.ok) { showFeedback('temp-feedback', 'Error: ' + res.status, 'var(--red)'); return; }
+    tempBlocked = tempBlocked.filter(b => b.ip !== ip);
+    renderTemp();
+  } catch (err) { showFeedback('temp-feedback', err.message, 'var(--red)'); }
+}
+
+async function removePerm(ip) {
+  try {
+    const res = await fetch('/api/blocklist/permanent/' + encodeURIComponent(ip), { method: 'DELETE' });
+    if (!res.ok) { showFeedback('perm-feedback', 'Error: ' + res.status, 'var(--red)'); return; }
+    permBlocked = permBlocked.filter(x => x !== ip);
+    renderPerm();
+  } catch (err) { showFeedback('perm-feedback', err.message, 'var(--red)'); }
+}
+
+document.getElementById('btn-perm-add').addEventListener('click', async () => {
+  const input = document.getElementById('perm-ip-input');
+  const ip = input.value.trim();
+  if (!ip) return;
+  try {
+    const res = await fetch('/api/blocklist/permanent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { showFeedback('perm-feedback', body.error || 'Error', 'var(--red)'); return; }
+    if (!body.ok) { showFeedback('perm-feedback', 'Already in list'); return; }
+    if (!permBlocked.includes(ip)) permBlocked.push(ip);
+    input.value = '';
+    renderPerm();
+    showFeedback('perm-feedback', ip + ' added');
+  } catch (err) { showFeedback('perm-feedback', err.message, 'var(--red)'); }
+});
+
+document.getElementById('perm-ip-input').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter') document.getElementById('btn-perm-add').click();
+});
+
+// ── Auto-refresh from SSE global stream ───────────────────────────────────────
+function handleSse(e) {
+  switch (e.type) {
+    case 'ip.blocked':
+      if (!tempBlocked.find(b => b.ip === e.ip)) {
+        tempBlocked.push({ ip: e.ip, blockedUntil: e.blockedUntil });
+        renderTemp();
+      }
+      break;
+    case 'ip.unblocked':
+      tempBlocked = tempBlocked.filter(b => b.ip !== e.ip);
+      renderTemp();
+      break;
+    case 'ip.added_permanent':
+      if (!permBlocked.includes(e.ip)) { permBlocked.push(e.ip); renderPerm(); }
+      break;
+    case 'ip.removed_permanent':
+      permBlocked = permBlocked.filter(x => x !== e.ip);
+      renderPerm();
+      break;
+  }
+}
+
+const es = new EventSource('/tubes/events');
+es.onmessage = ev => { try { handleSse(JSON.parse(ev.data)); } catch {} };
+es.onopen = () => { const d = document.getElementById('sse-dot'); if (d) d.className = 'sse-dot ok'; };
+es.onerror = () => { const d = document.getElementById('sse-dot'); if (d) d.className = 'sse-dot err'; };
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+renderTemp();
+renderPerm();
+
+document.querySelectorAll('section h2.collapsible-trigger').forEach(h2 => {
+  const body = document.getElementById(h2.dataset.collapse);
+  if (!body) return;
+  h2.addEventListener('click', () => {
+    const collapsed = body.classList.toggle('collapsed');
+    h2.querySelector('.toggle').textContent = collapsed ? '▸' : '▾';
+  });
+});
+
+})();
 </script>
 </body>
 </html>`;

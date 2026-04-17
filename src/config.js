@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { homedir } from 'node:os';
 import { ConfigError } from './common/errors.js';
 import { loadSecret } from './common/secret-loader.js';
 
@@ -73,6 +74,14 @@ export function buildServeConfig(env = process.env) {
     hmacClockSkewToleranceS: clockSkewS,
     hmacNonceMaxAgeS: clockSkewS * 2,
     hmacNonceCacheTtlS: clockSkewS * 4,
+    // ── Security & persistence ─────────────────────────────────────────────
+    // adminToken: resolved at startup in runServe() (auto-generated if null)
+    adminToken: _str(env.TT_ADMIN_TOKEN, null),
+    dataDir: _str(env.TT_DATA_DIR, resolve(homedir(), '.tt')),
+    // ── Rate limiting ──────────────────────────────────────────────────────
+    rateLimitWindowMs: _int(env.TT_RATE_LIMIT_WINDOW_MS, 60_000),
+    rateLimitMaxHits: _int(env.TT_RATE_LIMIT_MAX_HITS, 30),
+    rateLimitBlockDurationMs: _int(env.TT_RATE_LIMIT_BLOCK_DURATION_MS, 300_000),
   };
 
   // Derived defaults for external ports

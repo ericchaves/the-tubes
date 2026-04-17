@@ -5,7 +5,7 @@ docs/
 .env
 .env.*
 .captures/
-.dump/
+.captures/
 .tt/
 coverage/
 Taskfile.yaml

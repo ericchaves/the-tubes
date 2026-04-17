@@ -96,7 +96,7 @@ tasks:
   docker:up:
     desc: Start all services via compose
     cmds:
-      - mkdir -p .tt .dump && chmod 777 .tt .dump
+      - mkdir -p .tt .captures && chmod 777 .tt .captures
       - docker compose up --build
 
   docker:down:
@@ -105,9 +105,9 @@ tasks:
       - docker compose down -v
 
   dump:clean:
-    desc: Remove all captured request/response files from .dump/
+    desc: Remove all captured request/response files from .captures/
     cmds:
-      - rm -f .dump/*
+      - rm -f .captures/*
 
   clean:
     desc: Remove generated artifacts

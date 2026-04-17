@@ -193,6 +193,14 @@ export async function runExpose(config) {
     }
   });
 
+  tunnel.on('tunnel.token_missing', ({ code, reason }) => {
+    adminLog?.push('tunnel.token_missing', { code, reason });
+  });
+
+  tunnel.on('auth.rejected', ({ code, reason }) => {
+    adminLog?.push('auth.rejected', { code, reason });
+  });
+
   tunnel.on('exit', ({ code, reason }) => {
     tunnelState.status = 'closed';
     console.log(styleText(code === 0 ? 'dim' : 'red',
