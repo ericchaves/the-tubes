@@ -8,6 +8,7 @@ services:
       context: .
       dockerfile: Dockerfile
     command: serve
+    user: "${USER_ID}:${GROUP_ID}"
     ports:
       - "8080:8080"        # public HTTP (tunnel traffic)
       - "9000:9000"        # admin/API port (separate)
@@ -40,6 +41,7 @@ services:
       context: .
       dockerfile: Dockerfile
     command: expose
+    user: "${USER_ID}:${GROUP_ID}"
     depends_on:
       tt-server:
         condition: service_healthy

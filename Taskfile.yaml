@@ -95,9 +95,14 @@ tasks:
 
   docker:up:
     desc: Start all services via compose
+    vars:
+      USER_ID:
+        sh: id -u
+      GROUP_ID:
+        sh: id -g
     cmds:
-      - mkdir -p .tt .captures && chmod 777 .tt .captures
-      - docker compose up --build
+      - mkdir -p .tt .captures && chmod 750 .tt .captures
+      - USER_ID={{.USER_ID}} GROUP_ID={{.GROUP_ID}} docker compose up --build
 
   docker:down:
     desc: Stop and remove compose services

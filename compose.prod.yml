@@ -78,6 +78,7 @@ services:
     image: "${REGISTRY:-ghcr.io}/${ORG:-ericchaves}/the-tubes:${TAG:-latest}"
     container_name: tt-server
     restart: unless-stopped
+    user: "${USER_ID?missing thetubes service user uid}:${GROUP_ID?missing thetubes service user gid}"
     networks:
       - tt_net
     ports:
