@@ -188,6 +188,10 @@ export class TunnelCluster extends EventEmitter {
         const resMsg = _parseHttpMsg(resBuf);
         if (!resMsg) return;
         const statusCode = parseInt(resMsg.firstLine.split(' ')[1], 10);
+        // 101 Switching Protocols is a WebSocket upgrade — not a terminal response.
+        // It is handled by remote.once('end'); emitting early here would produce
+        // a spurious 'capture' event with method='GET' instead of 'WS'.
+        if (statusCode === 101) return;
         if ((statusCode >= 100 && statusCode < 200) || statusCode === 204 || statusCode === 304) {
           resNoBody = true;
         } else {
@@ -246,6 +250,14 @@ export class TunnelCluster extends EventEmitter {
         if (reqTotal < maxCollect) { reqBufs.push(chunk); reqTotal += chunk.length; }
       });
       local.on('data', chunk => {
+        // If the local service sends data before we've received any request from the server,
+        // the socket is stale (e.g. n8n sent HTTP 408 headersTimeout on an idle pre-connected
+        // socket). Discard this pair so the poisoned data is never piped to the server.
+        if (reqTotal === 0) {
+          emitDead('premature-local-data', 'localDrop', true);
+          remote.destroy();
+          return;
+        }
         bytesTransferred += chunk.length;
         resRawTotal += chunk.length;
         if (resTotal < maxCollect) { resBufs.push(chunk); resTotal += chunk.length; }
