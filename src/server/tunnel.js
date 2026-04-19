@@ -145,24 +145,64 @@ export class ServerTunnel extends EventEmitter {
       requestId, method, path, socketPoolRemaining: this.agent.availableCount,
     });
 
-    // Track bytes and parse HTTP response status from first chunk
+    // Track bytes and relay HTTP response properly.
+    // socket carries a full raw HTTP response (status line + headers + body).
+    // We must parse the response headers and call res.writeHead() before writing
+    // the body — piping raw bytes directly into http.ServerResponse would send
+    // "HTTP/1.1 200 OK\r\n..." as the body of the outer response.
     let bytesIn = 0;
     let bytesOut = 0;
     let status = 0;
-    let statusParsed = false;
     const startMs = Date.now();
 
     req.on('data', chunk => { bytesIn += chunk.length; });
+
+    // Buffer incoming socket data until we have the full response header section,
+    // then relay status + headers via res.writeHead() and stream the body.
+    let resBuf = Buffer.alloc(0);
+    let resHeadersParsed = false;
+
     socket.on('data', chunk => {
       bytesOut += chunk.length;
-      if (!statusParsed) {
-        // Peek at the first HTTP response line (e.g. "HTTP/1.1 200 OK")
-        const str = chunk.toString('latin1', 0, Math.min(chunk.length, 200));
-        const m = str.match(/^HTTP\/[\d.]+ (\d+)/);
-        if (m) status = parseInt(m[1], 10);
-        statusParsed = true;
+
+      if (resHeadersParsed) {
+        res.write(chunk);
+        return;
       }
+
+      resBuf = Buffer.concat([resBuf, chunk]);
+      const sepIdx = resBuf.indexOf('\r\n\r\n');
+      if (sepIdx === -1) return; // header section not yet complete
+
+      resHeadersParsed = true;
+      const headerSection = resBuf.slice(0, sepIdx).toString('latin1');
+      const lines = headerSection.split('\r\n');
+      const statusParts = lines[0].split(' ');
+      status = parseInt(statusParts[1], 10);
+
+      const headers = {};
+      for (let i = 1; i < lines.length; i++) {
+        const colon = lines[i].indexOf(':');
+        if (colon === -1) continue;
+        const name = lines[i].slice(0, colon).trim().toLowerCase();
+        const value = lines[i].slice(colon + 1).trim();
+        // Preserve duplicate headers (e.g. set-cookie) as arrays
+        if (Object.prototype.hasOwnProperty.call(headers, name)) {
+          headers[name] = [].concat(headers[name], value);
+        } else {
+          headers[name] = value;
+        }
+      }
+
+      res.writeHead(status, headers);
+
+      // Any body bytes that arrived in the same chunk as the last header bytes
+      const bodyStart = resBuf.slice(sepIdx + 4);
+      if (bodyStart.length > 0) res.write(bodyStart);
+      resBuf = null; // release buffer
     });
+
+    socket.once('end', () => { try { res.end(); } catch {} });
 
     // Reconstruct and forward the full HTTP request (headers + body).
     // Node.js has already consumed the headers from the TCP stream by the time
@@ -173,8 +213,7 @@ export class ServerTunnel extends EventEmitter {
       .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
       .join('\r\n');
     socket.write(reqLine + reqHeaders + '\r\n\r\n');
-    req.pipe(socket);
-    socket.pipe(res);
+    req.pipe(socket, { end: false });
 
     let loggedFinish = false;
     const logFinish = (reason) => {
