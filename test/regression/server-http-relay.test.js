@@ -19,6 +19,8 @@
  *   SRV-4  Keep-alive upstream — response ends on Content-Length, not socket close
  *   SRV-5  Chunked upstream — response ends on terminal 0-sized chunk
  *   SRV-6  No-body status (204) — response ends immediately after headers
+ *   SRV-7  GET without body — req.close does not prematurely tear down tunnel
+ *   SRV-8  Upstream closes without response — public client gets 502, not 200-empty
  */
 
 import { describe, it } from 'node:test';
@@ -68,6 +70,8 @@ async function setup() {
    *   - a string/Buffer  → written to the socket and the socket is closed
    *   - { reply, keepAlive: true } → written, but the socket is kept open
    *     (simulates an upstream service using HTTP keep-alive, like n8n)
+   *   - { close: true }  → close the socket immediately without responding
+   *     (simulates a zombie pool socket closed by an intermediate proxy)
    *   - null/undefined   → nothing is written
    */
   async function connectFakeSocket(onRequest) {
@@ -87,6 +91,8 @@ async function setup() {
       if (!result) return;
       if (typeof result === 'string' || Buffer.isBuffer(result)) {
         sock.write(result);
+        sock.end();
+      } else if (result.close) {
         sock.end();
       } else if (result.reply) {
         sock.write(result.reply);
@@ -253,6 +259,68 @@ describe('SRV-6: response_relay_no_body — 204 ends immediately after headers',
     assert.equal(res.status, 204);
     const text = await res.text();
     assert.equal(text, '');
+
+    await stop();
+  });
+});
+
+describe('SRV-7: response_relay_get_delay — upstream has time to respond to GET even though req has no body', () => {
+  it('does not tear down the tunnel socket on req.close for no-body GET before upstream responds', async () => {
+    const { base, connectFakeSocket, stop } = await setup();
+
+    // WhatsApp-style webhook verification — upstream (n8n) takes a few hundred
+    // milliseconds to process and respond. The server must NOT close the
+    // tunnel socket in response to req.close firing on the no-body GET.
+    const challenge = '128252226';
+
+    await connectFakeSocket(() => {
+      // Simulate upstream processing delay, then return the challenge.
+      const reply =
+        `HTTP/1.1 200 OK\r\n` +
+        `Content-Type: text/plain\r\n` +
+        `Content-Length: ${Buffer.byteLength(challenge)}\r\n` +
+        `Connection: keep-alive\r\n` +
+        `\r\n` +
+        challenge;
+      // Return the reply asynchronously so server's req.close has a chance
+      // to fire before the upstream response lands.
+      setTimeout(() => {}, 0);
+      return { reply, keepAlive: true };
+    });
+
+    const res = await Promise.race([
+      fetch(`${base}/webhook?hub.mode=subscribe&hub.challenge=${challenge}&hub.verify_token=x`),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('fetch timed out — tunnel was torn down prematurely')), 3000)
+      ),
+    ]);
+
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.equal(body, challenge,
+      `body must be the challenge, got ${JSON.stringify(body)} — if empty, req.close is tearing down the tunnel socket before upstream responds`);
+
+    await stop();
+  });
+});
+
+describe('SRV-8: response_relay_upstream_closed — 502 when tunnel socket closes without any response', () => {
+  it('returns 502 Bad Gateway when the upstream tunnel closes without sending any bytes', async () => {
+    const { base, connectFakeSocket, stop } = await setup();
+
+    // Simulate a zombie pool socket: connects, receives request, but closes
+    // without sending any response (e.g. the LB killed it right after delivery).
+    await connectFakeSocket(() => ({ close: true }));
+
+    const res = await Promise.race([
+      fetch(`${base}/webhook`),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('fetch timed out — server did not fail-fast on upstream close')), 3000)
+      ),
+    ]);
+
+    assert.equal(res.status, 502,
+      `must reply 502 Bad Gateway, not 200 with empty body — got ${res.status}`);
 
     await stop();
   });

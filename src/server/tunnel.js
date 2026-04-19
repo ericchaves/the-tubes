@@ -179,7 +179,22 @@ export class ServerTunnel extends EventEmitter {
     const endResponse = () => {
       if (responseEnded) return;
       responseEnded = true;
-      try { res.end(); } catch {}
+      // Defensive: if the tunnel socket closed before we parsed any response
+      // headers from upstream, don't let Node default to "200 OK with empty
+      // body" — that misleads callers (e.g. WhatsApp webhook verification).
+      // Report 502 Bad Gateway so the public client sees a real error.
+      if (!resHeadersParsed) {
+        try {
+          res.writeHead(502, {
+            'Content-Type': 'application/json',
+            'X-TT-Source': 'server',
+            'X-TT-Proto': 'the-tubes/1.0',
+          });
+          res.end(JSON.stringify({ error: 'Bad Gateway: upstream closed without response' }));
+        } catch {}
+      } else {
+        try { res.end(); } catch {}
+      }
       // Close the tunnel socket: the client's TunnelCluster uses one pair per
       // request. Leaving the socket dangling would keep stale pairs in the
       // pool; closing it unblocks the client's local.once('close') → remote.end().
@@ -296,16 +311,28 @@ export class ServerTunnel extends EventEmitter {
     };
 
     res.once('finish', () => logFinish('complete'));
-    res.once('close', () => { if (!res.writableFinished) logFinish('client_disconnected'); });
+    res.once('close', () => {
+      if (!res.writableFinished) {
+        // Public client abandoned the request before we finished responding —
+        // tear down the tunnel socket so upstream stops processing.
+        logFinish('client_disconnected');
+        try { socket.destroy(); } catch {}
+      }
+    });
     socket.once('error', () => {
       logFinish('socket_error');
-      try { res.end(); } catch {}
+      endResponse();
     });
     res.once('error', () => {
       logFinish('response_error');
       try { socket.destroy(); } catch {}
     });
-    req.once('close', () => { try { socket.end(); } catch {} });
+    // NOTE: do NOT tear down the tunnel socket on req.once('close'). For a GET
+    // request with no body, Node's IncomingMessage emits 'close' very early
+    // (the empty body stream is "consumed" immediately), which would close the
+    // tunnel socket before the upstream service could send its response.
+    // Only res.once('close') with !writableFinished is a reliable signal that
+    // the public client actually disconnected.
   }
 
   /**

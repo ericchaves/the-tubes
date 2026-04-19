@@ -84,8 +84,18 @@ export class TunnelAgent extends Agent {
     if (this._destroyed) {
       return Promise.reject(new Error('TunnelAgent destroyed'));
     }
-    if (this._availableSockets.length > 0) {
-      return Promise.resolve(this._availableSockets.shift());
+    // Pull the first still-usable socket. Sockets can be killed silently by
+    // intermediate proxies / load balancers on idle timeout; without this
+    // filter we'd hand out a zombie that would FIN immediately on first write,
+    // causing the caller to see a 0-byte response.
+    while (this._availableSockets.length > 0) {
+      const candidate = this._availableSockets.shift();
+      if (candidate.destroyed || candidate.readable === false || candidate.writable === false) {
+        debug('[%s] discarding dead socket from pool [pool=%d]', this.tunnelId, this._availableSockets.length);
+        try { candidate.destroy(); } catch {}
+        continue;
+      }
+      return Promise.resolve(candidate);
     }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
