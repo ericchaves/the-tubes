@@ -12,7 +12,7 @@ import { GlobalEventLog } from './admin/event-log.js';
 import { RateLimiter } from './rate-limiter.js';
 import { BlocklistManager } from './blocklist.js';
 import { getClientIp } from '../common/http-utils.js';
-import { createDebug } from '../debug.js';
+import { createDebug, debugManager } from '../debug.js';
 
 const debug = createDebug('server');
 
@@ -67,7 +67,7 @@ export async function runServe(config) {
     debug('HMAC authentication enabled');
   }
 
-  const adminServices = { manager, hmacVerify, startedAt, serverConfig: config, globalLog, rateLimiter, blocklist };
+  const adminServices = { manager, hmacVerify, startedAt, serverConfig: config, globalLog, rateLimiter, blocklist, debugManager };
 
   // ── Public server ──────────────────────────────────────────────────────────
   // Handles: tunnel traffic (by subdomain) + admin API (if no separate apiPort)
@@ -205,7 +205,7 @@ export async function runServe(config) {
 
   let apiServer = null;
   if (config.apiPort && config.apiPort !== config.publicPort) {
-    apiServer = createApiServer({ manager, hmacVerify, config, startedAt, globalLog });
+    apiServer = createApiServer({ manager, hmacVerify, config, startedAt, globalLog, debugManager, rateLimiter, blocklist });
     await listenServer(apiServer, config.apiPort, config.apiAddress);
   }
 

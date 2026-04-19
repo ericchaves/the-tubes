@@ -15,8 +15,8 @@ const debug = createDebug('server:api');
  * @param {number} opts.startedAt
  * @returns {import('node:http').Server}
  */
-export function createApiServer({ manager, hmacVerify, config, startedAt, globalLog }) {
-  const services = { manager, hmacVerify, startedAt, serverConfig: config, globalLog };
+export function createApiServer({ manager, hmacVerify, config, startedAt, globalLog, debugManager, rateLimiter, blocklist }) {
+  const services = { manager, hmacVerify, startedAt, serverConfig: config, globalLog, debugManager, rateLimiter, blocklist };
 
   const server = createServer((req, res) => {
     debug('%s %s', req.method, req.url);

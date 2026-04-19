@@ -33,9 +33,10 @@ function filterConfig(config) {
  * @param {import('./event-log.js').GlobalEventLog}       services.globalLog
  * @param {number}  services.startedAt  — epoch ms
  * @param {object}  services.serverConfig
+ * @param {import('../../debug.js').debugManager}         services.debugManager
  */
 export function handleAdminRoute(req, res, services) {
-  const { manager, globalLog, startedAt, serverConfig } = services;
+  const { manager, globalLog, startedAt, serverConfig, debugManager } = services;
   const url = new URL(req.url, 'http://localhost');
   const path = url.pathname;
   const method = req.method.toUpperCase();
@@ -61,26 +62,79 @@ export function handleAdminRoute(req, res, services) {
   // ── GET /tubes/events ───────────────────────────────────────────────────────
   if (method === 'GET' && path === '/tubes/events') {
     startSse(res);
-    // Send current server state as the first event so the page can initialize
     sseWrite(res, {
       type: 'server.state',
       uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
       config: filterConfig(serverConfig),
       tunnels: manager.getStatus(),
+      debug: debugManager?.state,
     });
     globalLog.addSseClient(res);
     debug('global SSE client connected');
     return;
   }
 
+  // ── GET /tubes/debug/events — debug SSE ─────────────────────────────────────
+  if (method === 'GET' && path === '/tubes/debug/events') {
+    startSse(res);
+    debugManager?.addSseClient(res);
+    debug('debug SSE client connected');
+    return;
+  }
+
+  // ── POST /tubes/debug — set debug level ────────────────────────────────────
+  if (method === 'POST' && path === '/tubes/debug') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      let parsed;
+      try { parsed = JSON.parse(body || '{}'); } catch {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      }
+      const enabled = !!parsed.enabled;
+      const pattern = typeof parsed.pattern === 'string' ? parsed.pattern : 'tt:*';
+      debugManager?.setLevel(enabled, pattern);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, enabled, pattern }));
+    });
+    return;
+  }
+
+  // ── POST /tubes/events/clear — clear global event ring buffer ───────────────
+  if (method === 'POST' && path === '/tubes/events/clear') {
+    globalLog.clear();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ ok: true }));
+  }
+
+  // ── POST /tubes/debug/clear — clear debug ring buffer ───────────────────────
+  if (method === 'POST' && path === '/tubes/debug/clear') {
+    debugManager?.clear();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ ok: true }));
+  }
+
   // ── Routes with :tunnelId ───────────────────────────────────────────────────
-  const tunnelIdMatch = path.match(/^\/tubes\/([^/]+?)(?:\/(events|disconnect))?$/);
+  const tunnelIdMatch = path.match(/^\/tubes\/([^/]+?)(?:\/(events(?:\/clear)?|disconnect))?$/);
   if (!tunnelIdMatch) {
     return send404(res);
   }
 
   const tunnelId = tunnelIdMatch[1];
   const action = tunnelIdMatch[2]; // 'events' | 'disconnect' | undefined
+
+  // POST /tubes/:tunnelId/events/clear
+  if (method === 'POST' && action === 'events/clear') {
+    const eventLog = manager.getEventLog(tunnelId);
+    if (!eventLog) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Tunnel not found' }));
+    }
+    eventLog.clear();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ ok: true, tunnelId }));
+  }
 
   // GET /tubes/:tunnelId/events
   if (method === 'GET' && action === 'events') {
@@ -111,7 +165,7 @@ export function handleAdminRoute(req, res, services) {
 
   // GET /tubes/:tunnelId
   if (method === 'GET' && !action) {
-    const html = adminTunnelPage(tunnelId);
+    const html = adminTunnelPage(tunnelId, serverConfig.adminToken);
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(html);
   }

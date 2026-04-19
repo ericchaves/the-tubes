@@ -15,6 +15,7 @@ const ICON = {
   eye:     icon('<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>'),
   eyeOff:  icon('<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/>'),
   copy:    icon('<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>'),
+  clip:    icon('<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>'),
   refresh: icon('<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>'),
   pencil:  icon('<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>'),
   x:       icon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
@@ -91,6 +92,15 @@ button.danger:hover{border-color:var(--red);color:var(--red)}
 .empty{color:var(--dim);padding:20px;text-align:center;font-size:13px}
 .section-actions{display:flex;gap:4px;margin-left:auto}
 section h2 .section-actions+.toggle{margin-left:4px}
+/* Debug controls */
+.debug-controls{display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.debug-pattern{background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font:12px 'SF Mono',ui-monospace,monospace;width:200px;outline:none}
+.debug-pattern:focus{border-color:var(--blue)}
+.debug-log{overflow-y:auto;max-height:300px;display:flex;flex-direction:column}
+.debug-row{display:grid;grid-template-columns:100px 160px 1fr;gap:8px;padding:3px 14px;border-bottom:1px solid #1a1f30;align-items:baseline}
+.debug-row:hover{background:var(--surface2)}
+.debug-ns{font-size:11px;color:var(--purple);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.debug-msg{font-size:12px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:pre}
 `;
 
 // All client-side logic is in a single IIFE. No external data is passed via
@@ -219,10 +229,92 @@ function makeLogRow(e, showTunnel) {
 
   return row;
 }
-function prependRow(container, row, max) {
-  container.insertBefore(row, container.firstChild);
-  while(container.children.length > (max||300)) container.removeChild(container.lastChild);
+function appendRow(container, row, max) {
+  const placeholder = container.querySelector('.empty');
+  if(placeholder) container.removeChild(placeholder);
+  container.appendChild(row);
+  while(container.children.length > (max||300)) container.removeChild(container.firstChild);
+  const wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
+  if(wasAtBottom) container.scrollTop = container.scrollHeight;
 }
+function appendDebugRow(container, entry) {
+  const placeholder = container.querySelector('.empty');
+  if(placeholder) container.removeChild(placeholder);
+  const row = document.createElement('div');
+  row.className = 'debug-row';
+  const ts = document.createElement('span'); ts.className = 'log-ts'; ts.textContent = fmtTime(entry.ts);
+  const ns = document.createElement('span'); ns.className = 'debug-ns'; ns.textContent = entry.ns;
+  const msg = document.createElement('span'); msg.className = 'debug-msg'; msg.textContent = entry.msg;
+  row.appendChild(ts); row.appendChild(ns); row.appendChild(msg);
+  container.appendChild(row);
+  const wasAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 60;
+  if(wasAtBottom) container.scrollTop = container.scrollHeight;
+}
+function clearDebugDom(container) {
+  while(container.firstChild) container.removeChild(container.firstChild);
+  const ph = document.createElement('div'); ph.className = 'empty'; ph.textContent = 'No debug entries';
+  container.appendChild(ph);
+}
+function copyContainerText(container, rowClass) {
+  const lines = Array.from(container.querySelectorAll('.'+rowClass)).map(r =>
+    Array.from(r.children).map(c => c.textContent.trim()).join('  ')
+  );
+  navigator.clipboard?.writeText(lines.join('\\n')).catch(() => {});
+}
+function setupDebugSection(logId, clearBtnId, copyBtnId, toggleUrl, clearUrl) {
+  const logEl = document.getElementById(logId);
+  if(!logEl) return;
+
+  const btnClear = document.getElementById(clearBtnId);
+  if(btnClear) btnClear.addEventListener('click', ev => {
+    ev.stopPropagation();
+    fetch(clearUrl, { method:'POST', headers: _adminHeaders() }).catch(() => {});
+  });
+
+  const btnCopy = document.getElementById(copyBtnId);
+  if(btnCopy) btnCopy.addEventListener('click', ev => {
+    ev.stopPropagation();
+    copyContainerText(logEl, 'debug-row');
+  });
+
+  // Connect debug SSE
+  let es;
+  function connectDebugSse(){
+    es = new EventSource('/tubes/debug/events');
+    es.onmessage = ev => {
+      try {
+        const e = JSON.parse(ev.data);
+        if(e.type === 'debug.state' || e.type === 'debug.changed') {
+          _applyDebugState(e);
+          if(e.type === 'debug.changed') appendDebugRow(logEl, { ts: e.ts, ns: 'debug', msg: (e.enabled ? 'enabled' : 'disabled') + ' pattern=' + e.pattern });
+        } else if(e.type === 'debug.log') appendDebugRow(logEl, e);
+        else if(e.type === 'debug.cleared') clearDebugDom(logEl);
+      } catch {}
+    };
+    es.onerror = () => { es.close(); setTimeout(connectDebugSse, 3000); };
+  }
+  connectDebugSse();
+
+  // Debug level controls
+  const cb = document.getElementById('debug-enabled');
+  const pi = document.getElementById('debug-pattern');
+  function setLevel(){
+    const enabled = cb ? cb.checked : false;
+    const pattern = pi ? (pi.value.trim() || 'tt:*') : 'tt:*';
+    fetch(toggleUrl, { method:'POST', headers:Object.assign({'Content-Type':'application/json'}, _adminHeaders()), body: JSON.stringify({ enabled, pattern }) }).catch(() => {});
+  }
+  if(cb) cb.addEventListener('change', setLevel);
+  if(pi){ pi.addEventListener('change', setLevel); pi.addEventListener('keydown', e => { if(e.key==='Enter') setLevel(); }); }
+}
+function _applyDebugState(e) {
+  const cb = document.getElementById('debug-enabled');
+  const pi = document.getElementById('debug-pattern');
+  if(cb && e.enabled != null) cb.checked = e.enabled;
+  if(pi && e.pattern != null) pi.value = e.pattern;
+}
+// Overridden per page with actual token
+let _getAdminToken = () => '';
+function _adminHeaders(){ const t = _getAdminToken(); return t ? {'X-TT-Admin-Token': t} : {}; }
 function setupSse(url, onEvent, dotEl) {
   const es = new EventSource(url);
   es.onmessage = ev => { try { onEvent(JSON.parse(ev.data)); } catch {} };
@@ -244,21 +336,37 @@ function setupCollapsible() {
     });
   });
 }
-function setupClearLog(btnId, logId, placeholder) {
+function setupClearLog(btnId, logId, placeholder, clearUrl) {
   const btn = document.getElementById(btnId);
   const log = document.getElementById(logId);
   if (!btn || !log) return;
   btn.addEventListener('click', (ev) => {
     ev.stopPropagation();
-    while (log.firstChild) log.removeChild(log.firstChild);
-    if (placeholder) {
-      const el = document.createElement('div');
-      el.className = 'empty';
-      el.textContent = placeholder;
-      log.appendChild(el);
+    if (clearUrl) {
+      // Server-side clear; DOM will be reset on events.cleared SSE event
+      fetch(clearUrl, { method:'POST', headers: _adminHeaders() }).catch(() => {});
+    } else {
+      _clearLogDom(log, placeholder);
     }
-    const countEl = log.closest('section')?.querySelector('[id$="-count"]');
-    if (countEl) countEl.textContent = '0';
+  });
+}
+function _clearLogDom(log, placeholder) {
+  while (log.firstChild) log.removeChild(log.firstChild);
+  if (placeholder) {
+    const el = document.createElement('div');
+    el.className = 'empty'; el.textContent = placeholder;
+    log.appendChild(el);
+  }
+  const countEl = log.closest('section')?.querySelector('[id$="-count"]');
+  if (countEl) countEl.textContent = '0';
+}
+function setupCopyLog(btnId, logId) {
+  const btn = document.getElementById(btnId);
+  const log = document.getElementById(logId);
+  if (!btn || !log) return;
+  btn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    copyContainerText(log, 'log-row');
   });
 }
 `;
@@ -311,13 +419,35 @@ export function adminIndexPage(filteredConfig, adminToken) {
     <h2 class="collapsible-trigger section-open" data-collapse="activity-wrap">
       Server activity
       <span class="section-actions">
-        <button class="btn-icon danger" id="btn-clear-log" title="Clear log">${ICON.x}</button>
+        <button class="btn-icon" id="btn-copy-log" title="Copy events">${ICON.clip}</button>
+        <button class="btn-icon danger" id="btn-clear-log" title="Clear events">${ICON.x}</button>
       </span>
       <span class="toggle">${ICON.chevron}</span>
     </h2>
     <div id="activity-wrap" class="collapsible">
       <div class="log" id="event-log">
         <div class="empty">Waiting for events\u2026</div>
+      </div>
+    </div>
+  </section>
+  <section>
+    <h2 class="collapsible-trigger" data-collapse="debug-wrap">
+      Debug
+      <span class="section-actions">
+        <button class="btn-icon" id="btn-copy-debug" title="Copy debug log">${ICON.clip}</button>
+        <button class="btn-icon danger" id="btn-clear-debug" title="Clear debug log">${ICON.x}</button>
+      </span>
+      <span class="toggle">${ICON.chevron}</span>
+    </h2>
+    <div id="debug-wrap" class="collapsible collapsed">
+      <div class="debug-controls">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="debug-enabled"> Enable
+        </label>
+        <input type="text" id="debug-pattern" class="debug-pattern" value="tt:*" placeholder="tt:*" title="Namespace pattern (e.g. tt:*, tt:server:*)">
+      </div>
+      <div id="debug-log" class="debug-log">
+        <div class="empty">No debug entries</div>
       </div>
     </div>
   </section>
@@ -353,6 +483,7 @@ ${CLIENT_SHARED_JS}
 // ── Admin token UI ────────────────────────────────────────────────────────────
 ;(function() {
   let token = ${tokenJson};
+  _getAdminToken = () => token;
   let revealed = false;
   const display   = document.getElementById('token-display');
   const feedback  = document.getElementById('token-feedback');
@@ -614,11 +745,14 @@ function handleEvent(e) {
     || SECURITY_EVENTS.has(e.type)
     || (e.tunnelId !== '__global__' && ADMIN_EVENTS.has(e.type));
 
+  if (e.type === 'events.cleared') {
+    _clearLogDom(document.getElementById('event-log'), 'Waiting for events\u2026');
+    return;
+  }
+
   if (showInLog) {
     const log = document.getElementById('event-log');
-    const placeholder = log.querySelector('.empty');
-    if (placeholder) log.removeChild(placeholder);
-    prependRow(log, makeLogRow(e, true));
+    appendRow(log, makeLogRow(e, true));
   }
 
   // Notify token UI on rotation
@@ -638,7 +772,9 @@ setInterval(() => {
 
 setupSse('/tubes/events', handleEvent, document.getElementById('sse-dot'));
 setupCollapsible();
-setupClearLog('btn-clear-log', 'event-log', 'Waiting for events\u2026');
+setupClearLog('btn-clear-log', 'event-log', 'Waiting for events\u2026', '/tubes/events/clear');
+setupCopyLog('btn-copy-log', 'event-log');
+setupDebugSection('debug-log', 'btn-clear-debug', 'btn-copy-debug', '/tubes/debug', '/tubes/debug/clear');
 </script>
 </body>
 </html>`;
@@ -650,11 +786,13 @@ setupClearLog('btn-clear-log', 'event-log', 'Waiting for events\u2026');
  * and encodeURIComponent (safe for URL context).
  *
  * @param {string} tunnelId
+ * @param {string} [adminToken]
  * @returns {string}
  */
-export function adminTunnelPage(tunnelId) {
+export function adminTunnelPage(tunnelId, adminToken) {
   // Serialised for use in a JS string literal only — never injected raw into HTML.
   const tunnelIdJson = JSON.stringify(tunnelId);
+  const tokenJson = JSON.stringify(adminToken ?? '');
   // Safe URL-encoded for href attributes
   const tunnelIdUrl = encodeURIComponent(tunnelId);
 
@@ -697,7 +835,8 @@ export function adminTunnelPage(tunnelId) {
     <h2 class="collapsible-trigger section-open" data-collapse="eventlog-wrap">
       Event log (<span id="event-count">0</span> events)
       <span class="section-actions">
-        <button class="btn-icon danger" id="btn-clear-log" title="Clear log">${ICON.x}</button>
+        <button class="btn-icon" id="btn-copy-log" title="Copy events">${ICON.clip}</button>
+        <button class="btn-icon danger" id="btn-clear-log" title="Clear events">${ICON.x}</button>
       </span>
       <span class="toggle">${ICON.chevron}</span>
     </h2>
@@ -707,11 +846,33 @@ export function adminTunnelPage(tunnelId) {
       </div>
     </div>
   </section>
+  <section>
+    <h2 class="collapsible-trigger" data-collapse="debug-wrap">
+      Debug
+      <span class="section-actions">
+        <button class="btn-icon" id="btn-copy-debug" title="Copy debug log">${ICON.clip}</button>
+        <button class="btn-icon danger" id="btn-clear-debug" title="Clear debug log">${ICON.x}</button>
+      </span>
+      <span class="toggle">${ICON.chevron}</span>
+    </h2>
+    <div id="debug-wrap" class="collapsible collapsed">
+      <div class="debug-controls">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="debug-enabled"> Enable
+        </label>
+        <input type="text" id="debug-pattern" class="debug-pattern" value="tt:*" placeholder="tt:*" title="Namespace pattern">
+      </div>
+      <div id="debug-log" class="debug-log">
+        <div class="empty">No debug entries</div>
+      </div>
+    </div>
+  </section>
 </main>
 <script>
 ${CLIENT_SHARED_JS}
 
 const tunnelId = ${tunnelIdJson};
+_getAdminToken = () => ${tokenJson};
 let reqCount = 0, failCount = 0, abortCount = 0, eventCount = 0;
 
 // Set tunnel title via DOM (safe)
@@ -786,10 +947,15 @@ function handleEvent(e) {
   }
 
   const log = document.getElementById('event-log');
-  const placeholder = log.querySelector('.empty');
-  if (placeholder) log.removeChild(placeholder);
 
-  prependRow(log, makeLogRow(e, false));
+  if (e.type === 'events.cleared') {
+    _clearLogDom(log, 'Waiting for events\u2026');
+    eventCount = 0;
+    setField('event-count', 0);
+    return;
+  }
+
+  appendRow(log, makeLogRow(e, false));
   eventCount++;
   setField('event-count', eventCount);
 }
@@ -809,7 +975,9 @@ document.getElementById('btn-disconnect').addEventListener('click', async () => 
 
 setupSse('/tubes/${tunnelIdUrl}/events', handleEvent, document.getElementById('sse-dot'));
 setupCollapsible();
-setupClearLog('btn-clear-log', 'event-log', 'Waiting for events\u2026');
+setupClearLog('btn-clear-log', 'event-log', 'Waiting for events\u2026', '/tubes/${tunnelIdUrl}/events/clear');
+setupCopyLog('btn-copy-log', 'event-log');
+setupDebugSection('debug-log', 'btn-clear-debug', 'btn-copy-debug', '/tubes/debug', '/tubes/debug/clear');
 </script>
 </body>
 </html>`;

@@ -2,8 +2,9 @@
  * Client admin HTML page generator.
  *
  * XSS safety: all dynamic values injected via JSON.stringify (configEntries,
- * reconnectLoopMax) are numbers/safe strings. All event data is handled client-side
- * via textContent — never innerHTML with untrusted data.
+ * reconnectLoopMax, hasCaptureDir) are numbers/booleans/safe strings.
+ * All event data is handled client-side via textContent — never innerHTML
+ * with untrusted data.
  */
 
 // ── Lucide SVG icons (inline, no external deps) ────────────────────────────
@@ -13,6 +14,7 @@ function icon(paths, size = 14) {
 const ICON = {
   x:       icon('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'),
   chevron: icon('<path d="m6 9 6 6 6-6"/>'),
+  clip:    icon('<rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>'),
 };
 
 const CSS = `
@@ -38,14 +40,12 @@ main{max-width:1100px;margin:0 auto;padding:20px;display:flex;flex-direction:col
 section{background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden}
 section h2{font-size:11px;font-weight:600;padding:8px 14px;border-bottom:1px solid var(--border);color:var(--dim);text-transform:uppercase;letter-spacing:.06em;display:flex;align-items:center;gap:8px}
 section h2.collapsible-trigger{cursor:pointer;user-select:none}
-section h2 .toggle{margin-left:auto;color:var(--dim);display:inline-flex;align-items:center;transition:transform .25s ease;transform:rotate(-90deg)}
+section h2 .toggle{color:var(--dim);display:inline-flex;align-items:center;transition:transform .25s ease;transform:rotate(-90deg)}
 section h2.section-open .toggle{transform:rotate(0deg)}
 .kv{display:grid;grid-template-columns:220px 1fr}
 .kv dt{padding:5px 14px;color:var(--dim);font-size:12px;border-bottom:1px solid var(--border)}
-.kv dd{padding:5px 14px;border-bottom:1px solid var(--border);word-break:break-all}
+.kv dd{padding:5px 14px;border-bottom:1px solid var(--border);word-break:break-all;display:flex;align-items:center;gap:8px}
 .kv dt:last-of-type,.kv dd:last-of-type{border-bottom:none}
-/* Collapsible: large default max-height so content is always visible when not collapsed.
-   Avoids the scrollHeight-capture-before-render bug. */
 .collapsible{overflow:hidden;transition:max-height .25s ease;max-height:9999px}
 .collapsible.collapsed{max-height:0!important}
 .stats-row{display:flex;gap:16px;padding:10px 14px;flex-wrap:wrap;border-bottom:1px solid var(--border)}
@@ -58,7 +58,6 @@ section h2.section-open .toggle{transform:rotate(0deg)}
 .health-fill.warn{background:var(--orange)}
 .health-fill.danger{background:var(--red)}
 .health-label{margin-top:4px;font-size:11px;color:var(--dim)}
-/* Flows compact layout (size=1 dropdown) */
 .flows-ui{display:flex;flex-direction:column;gap:8px;padding:10px 14px}
 .flows-top-row{display:flex;gap:8px;align-items:center}
 .flows-listbox{flex:1;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;font:13px 'SF Mono',ui-monospace,monospace;padding:3px 6px;height:28px;outline:none;cursor:pointer}
@@ -90,18 +89,40 @@ section h2.section-open .toggle{transform:rotate(0deg)}
 .t-reconnect{color:var(--yellow)}.t-replay{color:var(--blue)}.t-error{color:var(--red)}
 .t-local{color:var(--orange)}.t-exit{color:var(--red)}
 .empty{color:var(--dim);padding:16px;text-align:center;font-size:12px}
+/* Section header action buttons */
+.section-actions{display:flex;gap:4px;margin-left:auto}
+.btn-icon{padding:2px 6px;border-radius:3px;border:1px solid transparent;background:transparent;color:var(--dim);cursor:pointer;font-size:12px;font-family:inherit;line-height:1;display:inline-flex;align-items:center}
+.btn-icon:hover{border-color:var(--border);color:var(--text)}
+.btn-icon.danger:hover{color:var(--red)}
+/* Toggle button (capture on/off) */
+.btn-toggle{padding:2px 10px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer;font-size:11px;font-family:inherit}
+.btn-toggle.on{border-color:var(--green);color:var(--green);background:#0f2218}
+.btn-toggle.off{border-color:var(--orange);color:var(--orange);background:#1f1000}
+.btn-toggle:disabled{opacity:.4;cursor:not-allowed}
+/* Debug controls */
+.debug-controls{display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--border);flex-wrap:wrap}
+.debug-pattern{background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font:12px 'SF Mono',ui-monospace,monospace;width:200px;outline:none}
+.debug-pattern:focus{border-color:var(--blue)}
+.debug-log{overflow-y:auto;max-height:300px;display:flex;flex-direction:column}
+.debug-row{display:grid;grid-template-columns:88px 140px 1fr;gap:8px;padding:3px 14px;border-bottom:1px solid #1a1f30;align-items:baseline}
+.debug-row:hover{background:var(--surface2)}
+.debug-ns{font-size:11px;color:var(--purple);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.debug-msg{font-size:12px;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:pre}
 `;
 
-function makeClientJs(configEntries, reconnectLoopMax) {
+function makeClientJs(configEntries, reconnectLoopMax, hasCaptureDir) {
   return `
 (function(){
 const CONFIG_ENTRIES = ${JSON.stringify(configEntries)};
 const RECONNECT_LOOP_MAX = ${JSON.stringify(reconnectLoopMax)};
+const HAS_CAPTURE_DIR = ${JSON.stringify(hasCaptureDir)};
 
 // ── State ────────────────────────────────────────────────────────────────────
 let state = { status:'closed', publicUrl:null, localAddress:'localhost', localPort:null,
   tunnelId:null, maxConnections:0, startedAt:null,
   totalFailures:0, recentFailures:0, lastReason:null };
+let captureEnabled = false;
+let debugState = { enabled: false, pattern: 'tt:*' };
 let flows = [];
 let replayRunning = false;
 let startedAt = null;
@@ -130,6 +151,9 @@ const flowProgress  = document.getElementById('flow-progress-bar');
 const flowFill      = document.getElementById('flow-progress-fill');
 const logEl         = document.getElementById('log');
 const logCountEl    = document.getElementById('log-count');
+const debugLogEl    = document.getElementById('debug-log');
+const captureBtnEl  = document.getElementById('btn-capture-toggle');
+const captureStatEl = document.getElementById('capture-status');
 
 // ── Type metadata ────────────────────────────────────────────────────────────
 const TYPE_META = {
@@ -145,6 +169,7 @@ const TYPE_META = {
   'local.up':            ['t-local',    'LOCAL UP'],
   'request':             ['t-request',  'REQUEST'],
   'capture.saved':       ['t-capture',  'CAPTURE'],
+  'capture.toggled':     ['t-capture',  'CAPTURE'],
   'failure.recorded':    ['t-failure',  'FAILURE'],
   'reconnect.scheduled': ['t-reconnect','RECONNECT'],
   'expose.exit':         ['t-exit',     'EXIT'],
@@ -162,7 +187,7 @@ const EVENT_GROUPS = {
   'control.connected':'tunnel','control.resumed':'tunnel','control.disconnected':'tunnel',
   'pair.open':'pairs','pair.dead':'pairs',
   'local.down':'local','local.up':'local',
-  'request':'requests','capture.saved':'requests',
+  'request':'requests','capture.saved':'requests','capture.toggled':'requests',
   'failure.recorded':'health','reconnect.scheduled':'health',
   'expose.exit':'expose',
   'replay.started':'replay','replay.step':'replay','replay.step.error':'replay',
@@ -171,14 +196,12 @@ const EVENT_GROUPS = {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function setText(el, val){ if(el) el.textContent = val ?? '—'; }
-
 function fmtUptime(ms){
   const s = Math.floor(ms/1000);
   if(s < 60) return s+'s';
   if(s < 3600) return Math.floor(s/60)+'m '+(s%60)+'s';
   return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';
 }
-
 function fmtTs(iso){ return iso ? iso.slice(11,19) : ''; }
 
 function eventSummary(ev){
@@ -195,6 +218,7 @@ function eventSummary(ev){
     case 'local.up':          return (ev.address??'')+(ev.port?':'+ev.port:'');
     case 'request':           return (ev.method??'')+' '+(ev.path??'')+(ev.status?' → '+ev.status:'');
     case 'capture.saved':     return (ev.method??'')+' '+(ev.path??'')+' → '+(ev.file??'');
+    case 'capture.toggled':   return ev.enabled ? 'enabled' : 'disabled';
     case 'failure.recorded':  return 'kind='+ev.kind+' total='+ev.totalFailures+' recent='+ev.recentFailures;
     case 'reconnect.scheduled': return 'in '+ev.delayMs+'ms';
     case 'expose.exit':       return 'code='+ev.code+' '+(ev.reason??'');
@@ -219,24 +243,18 @@ function makeLogRow(ev){
   if(filterActive !== 'all' && filterActive !== group) row.style.display = 'none';
 
   const ts = document.createElement('span');
-  ts.className = 'log-ts';
-  ts.textContent = fmtTs(ev.ts);
-
+  ts.className = 'log-ts'; ts.textContent = fmtTs(ev.ts);
   const type = document.createElement('span');
-  type.className = 'log-type '+cls;
-  type.textContent = label;
-
+  type.className = 'log-type '+cls; type.textContent = label;
   const detail = document.createElement('span');
-  detail.className = 'log-detail';
-  detail.textContent = eventSummary(ev);
+  detail.className = 'log-detail'; detail.textContent = eventSummary(ev);
 
   row.appendChild(ts); row.appendChild(type); row.appendChild(detail);
   return row;
 }
 
 function appendLogRow(ev){
-  // Remove placeholder "No events yet" on first real event
-  if(logEl.children.length === 1 && logEl.firstElementChild.classList.contains('empty')){
+  if(logEl.children.length === 1 && logEl.firstElementChild?.classList.contains('empty')){
     logEl.removeChild(logEl.firstChild);
   }
   const row = makeLogRow(ev);
@@ -247,10 +265,113 @@ function appendLogRow(ev){
   updateLogCount();
 }
 
+function clearLogDom(){
+  while(logEl.firstChild) logEl.removeChild(logEl.firstChild);
+  const ph = document.createElement('div');
+  ph.className = 'empty'; ph.textContent = 'No events yet';
+  logEl.appendChild(ph);
+  filterActive = 'all';
+  document.querySelectorAll('.filter-btn[data-filter]').forEach(b => {
+    b.classList.toggle('active', b.dataset.filter === 'all');
+  });
+  updateLogCount();
+}
+
 function updateLogCount(){
   const total = logEl.children.length;
   const visible = Array.from(logEl.children).filter(r => r.style.display !== 'none').length;
   setText(logCountEl, filterActive === 'all' ? total+' events' : visible+'/'+total+' events');
+}
+
+// ── Debug log rendering ───────────────────────────────────────────────────────
+function appendDebugRow(entry){
+  if(!debugLogEl) return;
+  if(debugLogEl.children.length === 1 && debugLogEl.firstElementChild?.classList.contains('empty')){
+    debugLogEl.removeChild(debugLogEl.firstChild);
+  }
+  const row = document.createElement('div');
+  row.className = 'debug-row';
+
+  const ts = document.createElement('span');
+  ts.className = 'log-ts'; ts.textContent = fmtTs(entry.ts);
+
+  const ns = document.createElement('span');
+  ns.className = 'debug-ns'; ns.textContent = entry.ns;
+
+  const msg = document.createElement('span');
+  msg.className = 'debug-msg'; msg.textContent = entry.msg;
+
+  row.appendChild(ts); row.appendChild(ns); row.appendChild(msg);
+  debugLogEl.appendChild(row);
+  const wasAtBottom = debugLogEl.scrollHeight - debugLogEl.scrollTop - debugLogEl.clientHeight < 60;
+  if(wasAtBottom) debugLogEl.scrollTop = debugLogEl.scrollHeight;
+}
+
+function clearDebugDom(){
+  if(!debugLogEl) return;
+  while(debugLogEl.firstChild) debugLogEl.removeChild(debugLogEl.firstChild);
+  const ph = document.createElement('div');
+  ph.className = 'empty'; ph.textContent = 'No debug entries';
+  debugLogEl.appendChild(ph);
+}
+
+// ── Capture toggle ────────────────────────────────────────────────────────────
+function applyCaptureState(enabled){
+  captureEnabled = enabled;
+  if(captureBtnEl){
+    captureBtnEl.textContent = enabled ? 'ON' : 'OFF';
+    captureBtnEl.className = 'btn-toggle '+(enabled ? 'on' : 'off');
+  }
+  if(captureStatEl) captureStatEl.textContent = enabled ? 'on' : 'off';
+}
+
+function toggleCapture(){
+  const next = !captureEnabled;
+  fetch('/tubes/capture', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ enabled: next }),
+  }).catch(() => {});
+}
+
+// ── Debug controls ────────────────────────────────────────────────────────────
+function applyDebugState(d){
+  if(!d) return;
+  debugState = { enabled: d.enabled, pattern: d.pattern ?? 'tt:*' };
+  const cb = document.getElementById('debug-enabled');
+  const pi = document.getElementById('debug-pattern');
+  if(cb) cb.checked = debugState.enabled;
+  if(pi) pi.value   = debugState.pattern;
+}
+
+function setDebugLevel(){
+  const cb = document.getElementById('debug-enabled');
+  const pi = document.getElementById('debug-pattern');
+  const enabled = cb ? cb.checked : debugState.enabled;
+  const pattern = pi ? pi.value.trim() || 'tt:*' : debugState.pattern;
+  fetch('/tubes/debug', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ enabled, pattern }),
+  }).catch(() => {});
+}
+
+// ── Copy helpers ──────────────────────────────────────────────────────────────
+function copyEvents(){
+  const lines = Array.from(logEl.querySelectorAll('.log-row')).map(row => {
+    const parts = Array.from(row.children).map(c => c.textContent.trim());
+    return parts.join('  ');
+  });
+  navigator.clipboard?.writeText(lines.join('\\n')).catch(() => {});
+}
+
+function copyDebug(){
+  if(!debugLogEl) return;
+  const lines = Array.from(debugLogEl.querySelectorAll('.debug-row')).map(row => {
+    const parts = Array.from(row.children).map(c => c.textContent.trim());
+    return parts.join('  ');
+  });
+  navigator.clipboard?.writeText(lines.join('\\n')).catch(() => {});
 }
 
 // ── State rendering ───────────────────────────────────────────────────────────
@@ -286,32 +407,21 @@ function renderHealth(){
 
 // ── Flows listbox ─────────────────────────────────────────────────────────────
 function renderFlows(){
-  // DOM-safe clearing
   while(flowsSelect.firstChild) flowsSelect.removeChild(flowsSelect.firstChild);
-
   if(!flows.length){
     const opt = document.createElement('option');
-    opt.textContent = '(no flows found)';
-    opt.disabled = true;
+    opt.textContent = '(no flows found)'; opt.disabled = true;
     flowsSelect.appendChild(opt);
     updateFlowDetail(null);
     return;
   }
-
   for(const flow of flows){
     const opt = document.createElement('option');
     opt.value = flow.name;
-    opt.textContent = flow.valid
-      ? flow.name + '  (' + flow.steps + ' steps)'
-      : flow.name + '  ⚠ invalid';
-    if(!flow.valid){
-      opt.disabled = true;
-      opt.className = 'invalid';
-    }
+    opt.textContent = flow.valid ? flow.name + '  (' + flow.steps + ' steps)' : flow.name + '  ⚠ invalid';
+    if(!flow.valid){ opt.disabled = true; opt.className = 'invalid'; }
     flowsSelect.appendChild(opt);
   }
-
-  // Select first valid flow by default
   const firstValid = flows.find(f => f.valid);
   if(firstValid) flowsSelect.value = firstValid.name;
   updateFlowDetail(flowsSelect.value || null);
@@ -319,38 +429,24 @@ function renderFlows(){
 
 function updateFlowDetail(name){
   while(flowsDetail.firstChild) flowsDetail.removeChild(flowsDetail.firstChild);
-
   if(!name){
-    const span = document.createElement('span');
-    span.textContent = 'Select a flow to run';
-    flowsDetail.appendChild(span);
-    btnRunFlow.disabled = true;
-    return;
+    const span = document.createElement('span'); span.textContent = 'Select a flow to run';
+    flowsDetail.appendChild(span); btnRunFlow.disabled = true; return;
   }
-
   const flow = flows.find(f => f.name === name);
   if(!flow){ btnRunFlow.disabled = true; return; }
-
   if(!flow.valid){
-    const err = document.createElement('span');
-    err.style.color = 'var(--red)';
-    err.textContent = flow.error ?? 'invalid manifest';
-    flowsDetail.appendChild(err);
-    btnRunFlow.disabled = true;
-    return;
+    const err = document.createElement('span'); err.style.color = 'var(--red)';
+    err.textContent = flow.error ?? 'invalid manifest'; flowsDetail.appendChild(err);
+    btnRunFlow.disabled = true; return;
   }
-
   const meta = document.createElement('span');
   meta.textContent = flow.steps+' steps'+(flow.target ? '  →  '+flow.target : '');
   flowsDetail.appendChild(meta);
-
   btnRunFlow.disabled = replayRunning;
 }
 
-flowsSelect.addEventListener('change', () => {
-  updateFlowDetail(flowsSelect.value || null);
-});
-
+flowsSelect.addEventListener('change', () => { updateFlowDetail(flowsSelect.value || null); });
 btnRunFlow.addEventListener('click', () => {
   const name = flowsSelect.value;
   if(name && !replayRunning) triggerReplay(name);
@@ -358,51 +454,31 @@ btnRunFlow.addEventListener('click', () => {
 
 // ── Replay state ──────────────────────────────────────────────────────────────
 function setFlowRunning(){
-  replayRunning = true;
-  btnRunFlow.disabled = true;
-  flowsSelect.disabled = true;
+  replayRunning = true; btnRunFlow.disabled = true; flowsSelect.disabled = true;
   if(flowProgress) flowProgress.classList.add('active');
   if(flowFill) flowFill.style.width = '0%';
   if(flowStatus){ flowStatus.className = 'flow-status running'; flowStatus.textContent = 'running…'; }
 }
-
 function setFlowDone(ok, msg){
-  replayRunning = false;
-  btnRunFlow.disabled = false;
-  flowsSelect.disabled = false;
+  replayRunning = false; btnRunFlow.disabled = false; flowsSelect.disabled = false;
   if(flowFill) flowFill.style.width = '100%';
-  setTimeout(() => {
-    if(flowProgress) flowProgress.classList.remove('active');
-    if(flowFill) flowFill.style.width = '0%';
-  }, 1500);
-  if(flowStatus){
-    flowStatus.className = 'flow-status '+(ok ? 'ok' : 'err');
-    flowStatus.textContent = msg ?? (ok ? 'done' : 'error');
-    setTimeout(() => { flowStatus.textContent = ''; }, 5000);
-  }
+  setTimeout(() => { if(flowProgress) flowProgress.classList.remove('active'); if(flowFill) flowFill.style.width = '0%'; }, 1500);
+  if(flowStatus){ flowStatus.className = 'flow-status '+(ok ? 'ok' : 'err'); flowStatus.textContent = msg ?? (ok ? 'done' : 'error'); setTimeout(() => { flowStatus.textContent = ''; }, 5000); }
 }
-
 function updateFlowStep(stepIndex, total){
   if(flowFill && total > 0) flowFill.style.width = Math.round((stepIndex+1)/total*100)+'%';
 }
 
 // ── Replay trigger ────────────────────────────────────────────────────────────
 function triggerReplay(name){
-  if(replayRunning) return;
-  setFlowRunning();
-  fetch('/tubes/replay', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ manifest: name }),
-  }).then(res => {
-    if(!res.ok) return res.json().then(b => { throw new Error(b.error || res.statusText); });
-  }).catch(err => {
-    replayRunning = false;
-    btnRunFlow.disabled = false;
-    flowsSelect.disabled = false;
-    if(flowProgress) flowProgress.classList.remove('active');
-    if(flowStatus){ flowStatus.className = 'flow-status err'; flowStatus.textContent = err.message; setTimeout(()=>{ flowStatus.textContent=''; },5000); }
-  });
+  if(replayRunning) return; setFlowRunning();
+  fetch('/tubes/replay', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ manifest: name }) })
+    .then(res => { if(!res.ok) return res.json().then(b => { throw new Error(b.error || res.statusText); }); })
+    .catch(err => {
+      replayRunning = false; btnRunFlow.disabled = false; flowsSelect.disabled = false;
+      if(flowProgress) flowProgress.classList.remove('active');
+      if(flowStatus){ flowStatus.className = 'flow-status err'; flowStatus.textContent = err.message; setTimeout(()=>{ flowStatus.textContent=''; },5000); }
+    });
 }
 
 // ── Event handler ─────────────────────────────────────────────────────────────
@@ -413,47 +489,31 @@ function handleEvent(ev){
       if(ev.flows){ flows = ev.flows; renderFlows(); }
       return;
     case 'expose.started':
-      state.status = 'open';
-      state.publicUrl = ev.serverUrl ?? null;
+      state.status = 'open'; state.publicUrl = ev.serverUrl ?? null;
       state.localAddress = ev.localAddress ?? state.localAddress;
       state.localPort = ev.localPort ?? state.localPort;
       startedAt = ev.ts ? new Date(ev.ts) : new Date();
-      startUptimeTicker();
-      renderStatus();
-      break;
+      startUptimeTicker(); renderStatus(); break;
     case 'tunnel.open':
-      state.status = 'open';
-      state.publicUrl = ev.publicUrl ?? state.publicUrl;
+      state.status = 'open'; state.publicUrl = ev.publicUrl ?? state.publicUrl;
       state.tunnelId = ev.tunnelId ?? state.tunnelId;
       state.maxConnections = ev.maxConnections ?? state.maxConnections;
-      renderStatus();
-      break;
+      renderStatus(); break;
     case 'tunnel.closed':
-      state.status = 'closed';
-      renderStatus();
-      break;
+      state.status = 'closed'; renderStatus(); break;
     case 'failure.recorded':
       state.totalFailures = ev.totalFailures ?? state.totalFailures;
       state.recentFailures = ev.recentFailures ?? state.recentFailures;
       state.lastReason = ev.kind ?? state.lastReason;
-      renderHealth();
-      break;
+      renderHealth(); break;
     case 'expose.exit':
-      state.status = 'closed';
-      renderStatus();
-      break;
-    case 'replay.started':
-      setFlowRunning();
-      break;
-    case 'replay.step':
-      updateFlowStep(ev.stepIndex ?? 0, ev.total ?? 1);
-      break;
-    case 'replay.completed':
-      setFlowDone(true, 'done in '+ev.durationMs+'ms');
-      break;
-    case 'replay.error':
-      setFlowDone(false, ev.error ?? 'error');
-      break;
+      state.status = 'closed'; renderStatus(); break;
+    case 'replay.started': setFlowRunning(); break;
+    case 'replay.step': updateFlowStep(ev.stepIndex ?? 0, ev.total ?? 1); break;
+    case 'replay.completed': setFlowDone(true, 'done in '+ev.durationMs+'ms'); break;
+    case 'replay.error': setFlowDone(false, ev.error ?? 'error'); break;
+    case 'capture.toggled': applyCaptureState(ev.enabled); break;
+    case 'events.cleared': clearLogDom(); return;
   }
   appendLogRow(ev);
 }
@@ -469,8 +529,9 @@ function applyState(s){
   if(s.recentFailures != null) state.recentFailures = s.recentFailures;
   if(s.lastReason) state.lastReason = s.lastReason;
   if(s.startedAt){ startedAt = new Date(s.startedAt); startUptimeTicker(); }
-  renderStatus();
-  renderHealth();
+  if(s.captureEnabled != null) applyCaptureState(s.captureEnabled);
+  if(s.debug) applyDebugState(s.debug);
+  renderStatus(); renderHealth();
 }
 
 // ── Uptime ticker ─────────────────────────────────────────────────────────────
@@ -494,12 +555,12 @@ document.querySelectorAll('.filter-btn').forEach(btn => {
 });
 
 // ── Collapsible sections ──────────────────────────────────────────────────────
-// Uses CSS rotation of a chevron SVG via section-open class on h2.
 document.querySelectorAll('section h2.collapsible-trigger').forEach(h2 => {
   const body = document.getElementById(h2.dataset.collapse);
   if(!body) return;
   if(!body.classList.contains('collapsed')) h2.classList.add('section-open');
-  h2.addEventListener('click', () => {
+  h2.addEventListener('click', (ev) => {
+    if(ev.target.closest('.section-actions')) return;
     const collapsed = body.classList.toggle('collapsed');
     h2.classList.toggle('section-open', !collapsed);
   });
@@ -516,41 +577,74 @@ document.querySelectorAll('section h2.collapsible-trigger').forEach(h2 => {
   }
 })();
 
-// ── SSE connection ─────────────────────────────────────────────────────────────
+// ── Events SSE ────────────────────────────────────────────────────────────────
 (function connectSse(){
   let es;
   function connect(){
     es = new EventSource('/tubes/events');
     es.onopen = () => { sseDot.className = 'sse-dot ok'; };
     es.onmessage = (e) => { try { handleEvent(JSON.parse(e.data)); } catch {} };
-    es.onerror = () => {
-      sseDot.className = 'sse-dot err';
-      es.close();
-      setTimeout(connect, 3000);
-    };
+    es.onerror = () => { sseDot.className = 'sse-dot err'; es.close(); setTimeout(connect, 3000); };
   }
   connect();
 })();
 
-// ── Clear log button ───────────────────────────────────────────────────────────
-;(function(){
-  const btn = document.getElementById('btn-clear-log');
-  if (!btn) return;
-  btn.addEventListener('click', (ev) => {
-    ev.stopPropagation();
-    while (logEl.firstChild) logEl.removeChild(logEl.firstChild);
-    const ph = document.createElement('div');
-    ph.className = 'empty'; ph.textContent = 'No events yet';
-    logEl.appendChild(ph);
-    filterActive = 'all';
-    document.querySelectorAll('.filter-btn[data-filter]').forEach(b => {
-      b.classList.toggle('active', b.dataset.filter === 'all');
-    });
-    updateLogCount();
-  });
+// ── Debug SSE ─────────────────────────────────────────────────────────────────
+(function connectDebugSse(){
+  let es;
+  function connect(){
+    es = new EventSource('/tubes/debug/events');
+    es.onmessage = (e) => {
+      try {
+        const ev = JSON.parse(e.data);
+        if(ev.type === 'debug.state' || ev.type === 'debug.changed') {
+          applyDebugState({ enabled: ev.enabled, pattern: ev.pattern });
+          if(ev.type === 'debug.changed') appendDebugRow({ ts: ev.ts, ns: 'debug', msg: (ev.enabled ? 'enabled' : 'disabled') + ' pattern=' + ev.pattern });
+        } else if(ev.type === 'debug.log') appendDebugRow(ev);
+        else if(ev.type === 'debug.cleared') clearDebugDom();
+      } catch {}
+    };
+    es.onerror = () => { es.close(); setTimeout(connect, 3000); };
+  }
+  connect();
 })();
 
-// ── Initial render ─────────────────────────────────────────────────────────────
+// ── Activity section buttons ──────────────────────────────────────────────────
+;(function(){
+  const btnClear = document.getElementById('btn-clear-events');
+  if(btnClear) btnClear.addEventListener('click', ev => {
+    ev.stopPropagation();
+    fetch('/tubes/events/clear', { method:'POST' }).catch(() => {});
+  });
+
+  const btnCopy = document.getElementById('btn-copy-events');
+  if(btnCopy) btnCopy.addEventListener('click', ev => { ev.stopPropagation(); copyEvents(); });
+})();
+
+// ── Debug section buttons ─────────────────────────────────────────────────────
+;(function(){
+  const btnClear = document.getElementById('btn-clear-debug');
+  if(btnClear) btnClear.addEventListener('click', ev => {
+    ev.stopPropagation();
+    fetch('/tubes/debug/clear', { method:'POST' }).catch(() => {});
+  });
+
+  const btnCopy = document.getElementById('btn-copy-debug');
+  if(btnCopy) btnCopy.addEventListener('click', ev => { ev.stopPropagation(); copyDebug(); });
+})();
+
+// ── Capture toggle button ─────────────────────────────────────────────────────
+if(captureBtnEl) captureBtnEl.addEventListener('click', ev => { ev.stopPropagation(); toggleCapture(); });
+
+// ── Debug controls ────────────────────────────────────────────────────────────
+;(function(){
+  const cb = document.getElementById('debug-enabled');
+  const pi = document.getElementById('debug-pattern');
+  if(cb) cb.addEventListener('change', setDebugLevel);
+  if(pi){ pi.addEventListener('change', setDebugLevel); pi.addEventListener('keydown', e => { if(e.key==='Enter') setDebugLevel(); }); }
+})();
+
+// ── Initial render ────────────────────────────────────────────────────────────
 renderStatus();
 renderHealth();
 renderFlows();
@@ -572,6 +666,7 @@ export function adminPage({ filteredConfig }) {
     .map(([k, v]) => [k, v == null ? 'null' : String(v)]);
 
   const reconnectLoopMax = filteredConfig?.reconnectLoopMax ?? 10;
+  const hasCaptureDir = !!(filteredConfig?.captureDir);
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -590,7 +685,7 @@ export function adminPage({ filteredConfig }) {
 </header>
 <main>
 
-  <!-- Tunnel info (expanded by default) -->
+  <!-- Tunnel info -->
   <section>
     <h2 class="collapsible-trigger section-open" data-collapse="tunnel-body">Tunnel <span class="toggle">${ICON.chevron}</span></h2>
     <div id="tunnel-body" class="collapsible">
@@ -603,11 +698,18 @@ export function adminPage({ filteredConfig }) {
         <dd id="tunnel-id">—</dd>
         <dt>Max connections</dt>
         <dd id="max-conn">—</dd>
+        <dt>Capture</dt>
+        <dd>
+          <span id="capture-status">${hasCaptureDir ? 'on' : 'not configured'}</span>
+          ${hasCaptureDir
+            ? `<button id="btn-capture-toggle" class="btn-toggle on" title="Toggle capture">ON</button>`
+            : `<span style="color:var(--dim);font-size:11px"> (--capture-dir not set)</span>`}
+        </dd>
       </dl>
     </div>
   </section>
 
-  <!-- Health (collapsed by default) -->
+  <!-- Health (collapsed) -->
   <section>
     <h2 class="collapsible-trigger" data-collapse="health-body">Health <span class="toggle">${ICON.chevron}</span></h2>
     <div id="health-body" class="collapsible collapsed">
@@ -623,7 +725,7 @@ export function adminPage({ filteredConfig }) {
     </div>
   </section>
 
-  <!-- Flows (collapsed by default) -->
+  <!-- Flows (collapsed) -->
   <section>
     <h2 class="collapsible-trigger" data-collapse="flows-body">Flows <span class="toggle">${ICON.chevron}</span></h2>
     <div id="flows-body" class="collapsible collapsed">
@@ -641,15 +743,16 @@ export function adminPage({ filteredConfig }) {
     </div>
   </section>
 
-  <!-- Activity log (expanded by default) -->
+  <!-- Activity log -->
   <section class="log-section">
-    <h2 class="collapsible-trigger" data-collapse="activity-body">
+    <h2 class="collapsible-trigger section-open" data-collapse="activity-body">
       Activity
       <span id="log-count" style="font-weight:400;color:var(--dim);font-size:11px;margin-left:4px"></span>
-      <span style="display:flex;gap:4px;margin-left:auto">
-        <button class="filter-btn" id="btn-clear-log" style="border-radius:4px;padding:1px 7px;font-size:12px;display:inline-flex;align-items:center" title="Clear log">${ICON.x}</button>
+      <span class="section-actions">
+        <button class="btn-icon" id="btn-copy-events" title="Copy events">${ICON.clip}</button>
+        <button class="btn-icon danger" id="btn-clear-events" title="Clear events">${ICON.x}</button>
       </span>
-      <span class="toggle" style="margin-left:6px">${ICON.chevron}</span>
+      <span class="toggle" style="margin-left:4px">${ICON.chevron}</span>
     </h2>
     <div id="activity-body" class="collapsible">
       <div class="log-filters">
@@ -668,7 +771,30 @@ export function adminPage({ filteredConfig }) {
     </div>
   </section>
 
-  <!-- Config (collapsed by default, after activity) -->
+  <!-- Debug (collapsed by default) -->
+  <section>
+    <h2 class="collapsible-trigger" data-collapse="debug-body">
+      Debug
+      <span class="section-actions">
+        <button class="btn-icon" id="btn-copy-debug" title="Copy debug log">${ICON.clip}</button>
+        <button class="btn-icon danger" id="btn-clear-debug" title="Clear debug log">${ICON.x}</button>
+      </span>
+      <span class="toggle" style="margin-left:4px">${ICON.chevron}</span>
+    </h2>
+    <div id="debug-body" class="collapsible collapsed">
+      <div class="debug-controls">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+          <input type="checkbox" id="debug-enabled"> Enable
+        </label>
+        <input type="text" id="debug-pattern" class="debug-pattern" value="tt:*" placeholder="tt:*" title="Namespace pattern (e.g. tt:*, tt:client:*)">
+      </div>
+      <div id="debug-log" class="debug-log">
+        <div class="empty">No debug entries</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Config (collapsed) -->
   <section>
     <h2 class="collapsible-trigger" data-collapse="config-body">Config <span class="toggle">${ICON.chevron}</span></h2>
     <div id="config-body" class="collapsible collapsed">
@@ -677,7 +803,7 @@ export function adminPage({ filteredConfig }) {
   </section>
 
 </main>
-<script>${makeClientJs(configEntries, reconnectLoopMax)}</script>
+<script>${makeClientJs(configEntries, reconnectLoopMax, hasCaptureDir)}</script>
 </body>
 </html>`;
 }

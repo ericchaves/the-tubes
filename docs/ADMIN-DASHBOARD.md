@@ -73,6 +73,58 @@ A **Disconnect** button at the top destroys the tunnel immediately (equivalent t
 
 ---
 
+## Debug Section
+
+Both the server dashboard (`/tubes`) and each tunnel detail page (`/tubes/:tunnelId`) include a collapsible **Debug** section that lets you control and view internal debug logging at runtime — no server restart required.
+
+### Enabling debug logging
+
+Expand the Debug section and check **Enable**. You can also set a namespace pattern (default `tt:*`) to filter which subsystems emit entries.
+
+The toggle sends `POST /tubes/debug` and the server responds immediately. Once enabled, any code path instrumented with `createDebug(ns)` where the namespace matches the pattern will emit entries.
+
+You can also start the server with debug pre-enabled:
+
+```bash
+NODE_DEBUG=tt:* tt serve ...
+```
+
+or in `compose.yml`:
+
+```yaml
+environment:
+  NODE_DEBUG: "tt:*"
+```
+
+### Debug log
+
+Entries appear in real time via the debug SSE stream (`GET /tubes/debug/events`). Each row shows:
+
+| Column | Content |
+|---|---|
+| Timestamp | HH:MM:SS.mmm |
+| Namespace | e.g. `tt:server:admin`, `tt:server:tunnel` |
+| Message | Formatted log line |
+
+The in-memory ring buffer holds the last **500 entries**. New SSE clients receive the full history on connect. The **clear** button (✕) flushes the buffer server-side.
+
+### Debug API
+
+```
+POST /tubes/debug
+X-TT-Admin-Token: <token>
+Content-Type: application/json
+
+{ "enabled": true, "pattern": "tt:*" }
+```
+
+```
+GET /tubes/debug/events          — SSE stream of debug entries
+POST /tubes/debug/clear          — flush the ring buffer
+```
+
+---
+
 ## Client Admin Dashboard
 
 The expose client (`tt expose`) also has a built-in dashboard, served locally at `--admin-port`:

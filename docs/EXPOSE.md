@@ -29,6 +29,7 @@ tt expose --local-port <port> --server-url <url> [options]
 | `--open-browser` | `TT_OPEN_BROWSER` | false | Open the tunnel URL in a browser |
 | `--log-requests` | `TT_LOG_REQUESTS` | false | Log each proxied request |
 | `--capture-dir` | `TT_CAPTURE_DIR` | — | Directory to save request/response YAML captures |
+| `--capture` | `TT_CAPTURE_ENABLED` | false | Start capture enabled (requires `--capture-dir`) |
 | `--capture-max-body-kb` | `TT_CAPTURE_MAX_BODY_KB` | 1024 | Max body size in KB for captures |
 | `--reconnect-local` / `--no-reconnect-local` | `TT_RECONNECT_LOCAL` | true | Retry connection when local service closes |
 | `--reconnect-loop-window-s` | `TT_RECONNECT_LOOP_WINDOW_S` | 60 | Sliding window for failure detection (seconds) |
@@ -74,7 +75,18 @@ tt expose --local-port 3000 --server-url http://tunnel.example.com
 
 ### Capture webhook traffic for replay
 
+`--capture-dir` sets where files are saved; `--capture` enables capture at startup. Without `--capture`, the inspector is created but paused — you can turn it on later from the client admin dashboard.
+
 ```bash
+# Start with capture enabled immediately
+tt expose \
+  --local-port 3000 \
+  --server-url http://tunnel.example.com \
+  --capture-dir ./captures \
+  --capture \
+  --tunnel-subdomain my-webhook
+
+# Start with capture paused (toggle on from the admin dashboard)
 tt expose \
   --local-port 3000 \
   --server-url http://tunnel.example.com \

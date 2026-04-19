@@ -50,6 +50,10 @@ export class ClientTunnel extends EventEmitter {
     this._policy = new ReconnectPolicy();
   }
 
+  get captureEnabled() { return this._cluster?.captureEnabled ?? !!this.config.captureDir; }
+
+  toggleCapture(enabled) { this._cluster?.toggleCapture(enabled); }
+
   async open(sessionToken) {
     this.info = await this._fetchTunnelInfo(sessionToken);
     this.emit('url', { publicUrl: this.info.publicUrl });

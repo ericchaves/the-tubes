@@ -48,9 +48,11 @@ export class TunnelCluster extends EventEmitter {
     /** @type {Map<string, object>} pairId → pair state */
     this.pairs = new Map();
     this._closed = false;
+    this._captureEnabled = !!config.captureDir && !!config.captureEnabled;
     this._inspector = config.captureDir
       ? new HttpInspector({ captureDir: config.captureDir, tunnelId: info.tunnelId, maxBodyKb: config.captureMaxBodyKb })
       : null;
+    if (this._inspector && !this._captureEnabled) this._inspector.setPaused(true);
 
     // Wire control messages to pair lifecycle
     control.on('message', msg => {
@@ -384,6 +386,13 @@ export class TunnelCluster extends EventEmitter {
   }
 
   getInflightPairIds() { return [...this.pairs.keys()]; }
+
+  get captureEnabled() { return this._captureEnabled; }
+
+  toggleCapture(enabled) {
+    this._captureEnabled = enabled;
+    this._inspector?.setPaused(!enabled);
+  }
 
   close() {
     this._closed = true;

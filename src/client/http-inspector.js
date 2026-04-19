@@ -24,8 +24,12 @@ export class HttpInspector {
     this._dir = captureDir;
     this._tunnelId = tunnelId;
     this._maxBodyBytes = maxBodyKb * 1024;
+    this.paused = false;
     mkdirSync(captureDir, { recursive: true });
   }
+
+  /** Pause or resume capture without destroying the inspector. */
+  setPaused(paused) { this.paused = paused; }
 
   /**
    * Save a captured request. Returns the captureId for pairing with the response.
@@ -38,6 +42,7 @@ export class HttpInspector {
    * @returns {string} captureId
    */
   captureRequest({ method, path, headers, body }) {
+    if (this.paused) return null;
     const captureId = generateCaptureId();
 
     const bodyResult = this._encodeBody(body, headers['content-encoding'], captureId, 'req');
@@ -72,6 +77,7 @@ export class HttpInspector {
    * @param {string} captureId - from captureRequest()
    */
   captureResponse({ status, headers, body }, captureId) {
+    if (this.paused || captureId == null) return;
     // Skip server-generated responses (e.g., 503, 404 from our own server)
     if (headers['x-tt-source'] === 'server') {
       debug('skipping server-generated response (id=%s)', captureId);
@@ -108,6 +114,7 @@ export class HttpInspector {
    * @returns {string} captureId
    */
   captureWebSocket({ path, reqHeaders, frames }) {
+    if (this.paused) return;
     const captureId = generateCaptureId();
 
     const doc = {

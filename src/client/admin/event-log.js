@@ -69,6 +69,15 @@ export class ClientEventLog {
     for (const e of this._events) _sseWrite(res, e);
   }
 
+  /**
+   * Clear the ring buffer and broadcast 'events.cleared' to all SSE clients.
+   */
+  clear() {
+    this._events.length = 0;
+    const notice = { seq: ++_seq, ts: new Date().toISOString(), type: 'events.cleared' };
+    for (const res of this._sseClients) _sseWrite(res, notice);
+  }
+
   get events() { return [...this._events]; }
   get size() { return this._events.length; }
 }

@@ -3,7 +3,7 @@ import { ClientTunnel } from './tunnel.js';
 import { resolveSessionToken } from '../common/session-file.js';
 import { openBrowser } from './open-browser.js';
 import { ConfigError } from '../common/errors.js';
-import { createDebug } from '../debug.js';
+import { createDebug, debugManager } from '../debug.js';
 
 const debug = createDebug('client');
 
@@ -71,6 +71,8 @@ export async function runExpose(config) {
       getState: () => ({ ...tunnelState }),
       filteredConfig,
       flowsDir: config.flowsDir,
+      getTunnel: () => tunnel,
+      debugManager,
       onReplay: async (manifest, manifestDir, name) => {
         // Derive an internal target URL so the replay can reach the tunnel server
         // from inside a container. The manifest target (e.g. http://demo.tt.localhost:8080)
@@ -131,7 +133,7 @@ export async function runExpose(config) {
     console.log(styleText('green', `\nTunnel open:`));
     console.log(`  public:  ${styleText('cyan', publicUrl)}`);
     console.log(`  local:   ${config.localTls ? 'https' : 'http'}://${config.localAddress}:${config.localPort}`);
-    if (config.captureDir) console.log(`  capture: ${config.captureDir}`);
+    if (config.captureDir) console.log(`  capture: ${config.captureDir} (${config.captureEnabled ? 'enabled' : 'disabled'})`);
     if (config.hmacSecret) console.log(styleText('yellow', '  hmac:    enabled'));
     if (adminServer) console.log(`  admin:   ${styleText('cyan', `http://localhost:${config.adminPort}`)}`);
 

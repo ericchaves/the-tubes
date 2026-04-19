@@ -134,6 +134,7 @@ export function buildExposeConfig(env = process.env) {
     openBrowser: _bool(env.TT_OPEN_BROWSER, false),
     logRequests: _bool(env.TT_LOG_REQUESTS, false),
     captureDir: _str(env.TT_CAPTURE_DIR, null),
+    captureEnabled: _bool(env.TT_CAPTURE_ENABLED, false),
     captureMaxBodyKb: _int(env.TT_CAPTURE_MAX_BODY_KB, 1024),
     reconnectLocal: _bool(env.TT_RECONNECT_LOCAL, true),
     reconnectLoopWindowS: _int(env.TT_RECONNECT_LOOP_WINDOW_S, 60),

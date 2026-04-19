@@ -120,6 +120,15 @@ export class EventLog {
     for (const fn of this._forwarders) fn(event);
   }
 
+  /**
+   * Clear the ring buffer and broadcast 'events.cleared' to all subscribers.
+   */
+  clear() {
+    this._events.length = 0;
+    const notice = { seq: ++_seq, ts: new Date().toISOString(), type: 'events.cleared', tunnelId: this.tunnelId };
+    this._notify(notice);
+  }
+
   get events() { return [...this._events]; }
   get subscriberCount() { return this._sseClients.size; }
 
@@ -138,6 +147,17 @@ export class EventLog {
 export class GlobalEventLog extends EventLog {
   constructor() {
     super('__global__', 1000);
+  }
+
+  /**
+   * Clear global ring buffer only (does not touch per-tunnel logs).
+   * Broadcasts 'events.cleared' to global SSE clients.
+   */
+  clear() {
+    this._events.length = 0;
+    const notice = { seq: ++_seq, ts: new Date().toISOString(), type: 'events.cleared', tunnelId: '__global__' };
+    for (const res of this._sseClients) _sseWrite(res, notice);
+    for (const fn of this._forwarders) fn(notice);
   }
 
   /**

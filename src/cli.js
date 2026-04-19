@@ -214,6 +214,7 @@ const EXPOSE_FLAGS = {
   '--open-browser': 'TT_OPEN_BROWSER',
   '--log-requests': 'TT_LOG_REQUESTS',
   '--capture-dir': 'TT_CAPTURE_DIR',
+  '--capture': 'TT_CAPTURE_ENABLED',
   '--capture-max-body-kb': 'TT_CAPTURE_MAX_BODY_KB',
   '--reconnect-local': 'TT_RECONNECT_LOCAL',
   '--no-reconnect-local': ['TT_RECONNECT_LOCAL', 'false'],
@@ -242,6 +243,7 @@ const BOOL_FLAGS = new Set([
   '--rewrite-host-header', '--no-rewrite-host-header',
   '--local-tls', '--ephemeral', '--open-browser', '--log-requests',
   '--reconnect-local', '--no-reconnect-local',
+  '--capture',
   '--send-host-header', '--dry-run',
 ]);
 
