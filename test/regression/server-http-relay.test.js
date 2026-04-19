@@ -16,6 +16,9 @@
  *   SRV-1  GET verification — body is the challenge value, not raw HTTP bytes
  *   SRV-2  POST request — response status and JSON body relayed correctly
  *   SRV-3  Custom headers — upstream headers forwarded to client
+ *   SRV-4  Keep-alive upstream — response ends on Content-Length, not socket close
+ *   SRV-5  Chunked upstream — response ends on terminal 0-sized chunk
+ *   SRV-6  No-body status (204) — response ends immediately after headers
  */
 
 import { describe, it } from 'node:test';
@@ -60,8 +63,12 @@ async function setup() {
 
   /**
    * Connect a fake tunnel-client socket to the agent.
-   * When the server forwards an HTTP request to it, call `onRequest(rawBytes)`
-   * and write back whatever that function returns.
+   * When the server forwards an HTTP request to it, call `onRequest(rawBytes)`.
+   * The handler may return:
+   *   - a string/Buffer  → written to the socket and the socket is closed
+   *   - { reply, keepAlive: true } → written, but the socket is kept open
+   *     (simulates an upstream service using HTTP keep-alive, like n8n)
+   *   - null/undefined   → nothing is written
    */
   async function connectFakeSocket(onRequest) {
     const sock = netConnect({ host: '127.0.0.1', port: agentPort });
@@ -70,14 +77,20 @@ async function setup() {
       sock.once('error', reject);
     });
     let buf = Buffer.alloc(0);
+    let replied = false;
     sock.on('data', chunk => {
       buf = Buffer.concat([buf, chunk]);
-      // Wait until we have the full HTTP request header section
+      if (replied) return;
       if (buf.indexOf('\r\n\r\n') === -1) return;
-      const reply = onRequest(buf);
-      if (reply) {
-        sock.write(reply);
+      replied = true;
+      const result = onRequest(buf);
+      if (!result) return;
+      if (typeof result === 'string' || Buffer.isBuffer(result)) {
+        sock.write(result);
         sock.end();
+      } else if (result.reply) {
+        sock.write(result.reply);
+        if (!result.keepAlive) sock.end();
       }
     });
     return sock;
@@ -146,6 +159,100 @@ describe('SRV-2: response_relay_post_json — POST response status and JSON body
     assert.equal(res.status, 200, 'status must be relayed as 200');
     const body = await res.json();
     assert.deepEqual(body, { received: true });
+
+    await stop();
+  });
+});
+
+describe('SRV-4: response_relay_keep_alive — response ends on Content-Length, not socket close', () => {
+  it('completes the response even when the upstream keeps the socket open (n8n keep-alive)', async () => {
+    const { base, connectFakeSocket, stop } = await setup();
+
+    const body = 'keep-alive-challenge-42';
+
+    await connectFakeSocket(() => ({
+      reply:
+        `HTTP/1.1 200 OK\r\n` +
+        `Content-Type: text/plain\r\n` +
+        `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+        `Connection: keep-alive\r\n` +
+        `\r\n` +
+        body,
+      keepAlive: true,
+    }));
+
+    const res = await Promise.race([
+      fetch(`${base}/webhook`),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('fetch timed out — response never ended')), 3000)
+      ),
+    ]);
+
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.equal(text, body);
+
+    await stop();
+  });
+});
+
+describe('SRV-5: response_relay_chunked — response ends on terminal 0-sized chunk', () => {
+  it('completes the response on chunked transfer-encoding terminator even with keep-alive', async () => {
+    const { base, connectFakeSocket, stop } = await setup();
+
+    // Chunked body: "hello" (5 bytes) then terminator
+    const chunked =
+      `5\r\nhello\r\n` +
+      `0\r\n\r\n`;
+
+    await connectFakeSocket(() => ({
+      reply:
+        `HTTP/1.1 200 OK\r\n` +
+        `Content-Type: text/plain\r\n` +
+        `Transfer-Encoding: chunked\r\n` +
+        `Connection: keep-alive\r\n` +
+        `\r\n` +
+        chunked,
+      keepAlive: true,
+    }));
+
+    const res = await Promise.race([
+      fetch(`${base}/chunked`),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('fetch timed out — chunked response never ended')), 3000)
+      ),
+    ]);
+
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.equal(text, 'hello');
+
+    await stop();
+  });
+});
+
+describe('SRV-6: response_relay_no_body — 204 ends immediately after headers', () => {
+  it('completes immediately on no-body status even when socket stays open', async () => {
+    const { base, connectFakeSocket, stop } = await setup();
+
+    await connectFakeSocket(() => ({
+      reply:
+        `HTTP/1.1 204 No Content\r\n` +
+        `Connection: keep-alive\r\n` +
+        `\r\n`,
+      keepAlive: true,
+    }));
+
+    const res = await Promise.race([
+      fetch(`${base}/noop`, { method: 'POST', body: 'x' }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('fetch timed out — 204 response never ended')), 3000)
+      ),
+    ]);
+
+    assert.equal(res.status, 204);
+    const text = await res.text();
+    assert.equal(text, '');
 
     await stop();
   });
