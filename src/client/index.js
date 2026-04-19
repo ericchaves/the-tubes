@@ -156,6 +156,27 @@ export async function runExpose(config) {
     adminLog?.push('pair.open', { pairId });
   });
 
+  tunnel.on('control.connected', ({ controlId }) => {
+    tunnelState.controlConnected = true;
+    tunnelState.controlId = controlId;
+    adminLog?.push('control.connected', { controlId });
+  });
+
+  tunnel.on('control.resumed', ({ controlId, previousControlId, keep, drop }) => {
+    tunnelState.controlConnected = true;
+    tunnelState.controlId = controlId;
+    adminLog?.push('control.resumed', {
+      controlId, previousControlId,
+      keptPairs: (keep ?? []).length,
+      droppedPairs: (drop ?? []).length,
+    });
+  });
+
+  tunnel.on('control.disconnected', ({ reason }) => {
+    tunnelState.controlConnected = false;
+    adminLog?.push('control.disconnected', { reason });
+  });
+
   tunnel.on('pair.dead', ({ pairId, reason, kind, retriable }) => {
     adminLog?.push('pair.dead', { pairId, reason, kind, retriable });
   });

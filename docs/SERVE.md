@@ -23,11 +23,11 @@ tt serve [options]
 | `--api-address` | `TT_API_ADDRESS` | 0.0.0.0 | Bind address for API server |
 | `--tunnel-port-start` | `TT_TUNNEL_PORT_START` | — | Start of TCP port range for tunnel connections |
 | `--tunnel-port-end` | `TT_TUNNEL_PORT_END` | — | End of TCP port range |
-| `--max-connections-per-tunnel` | `TT_MAX_CONNECTIONS_PER_TUNNEL` | 10 | Concurrent connections per expose session |
+| `--max-connections-per-tunnel` | `TT_MAX_CONNECTIONS_PER_TUNNEL` | 10 | Max concurrent on-demand pairs per expose session |
 | `--reconnect-window-ms` | `TT_RECONNECT_WINDOW_MS` | 30000 | How long to hold a tunnel reservation after disconnect (ms) |
 | `--trust-forward-headers` | `TT_TRUST_FORWARD_HEADERS` | false | Use `X-Forwarded-For` for client IP in logs |
-| `--http-wait-timeout-ms` | `TT_HTTP_WAIT_TIMEOUT_MS` | 5000 | Timeout waiting for a tunnel socket for HTTP |
-| `--websocket-wait-timeout-ms` | `TT_WEBSOCKET_WAIT_TIMEOUT_MS` | 10000 | Timeout waiting for a tunnel socket for WebSocket |
+| `--http-wait-timeout-ms` | `TT_HTTP_WAIT_TIMEOUT_MS` | 5000 | Timeout (ms) waiting for the expose client to open a data socket after `pair.open` is sent (HTTP) |
+| `--websocket-wait-timeout-ms` | `TT_WEBSOCKET_WAIT_TIMEOUT_MS` | 10000 | Timeout (ms) waiting for the expose client to open a data socket after `pair.open` is sent (WebSocket) |
 | `--retry-after-seconds` | `TT_RETRY_AFTER_SECONDS` | 5 | `Retry-After` header value in 503 responses |
 | `--hmac-secret` | `TT_HMAC_SECRET` | — | Shared HMAC secret (≥32 chars). Enables auth. |
 | `--hmac-secret-file` | `TT_HMAC_SECRET_FILE` | — | Read HMAC secret from file (Docker secrets) |
@@ -95,7 +95,7 @@ See [DEPLOYMENT.md](./DEPLOYMENT.md) for full reverse proxy configuration.
 
 ## Admin Dashboard
 
-The server exposes a real-time dashboard at `/admin` (and `/tubes/:tunnelId` for per-tunnel detail). It shows active tunnels, server configuration, and a live event stream of every request, response, and lifecycle event.
+The server exposes a real-time dashboard at `/tubes` (and `/tubes/:tunnelId` for per-tunnel detail). It shows active tunnels, server configuration, and a live event stream of every request, response, and lifecycle event.
 
 ```bash
 # Dashboard on the default port

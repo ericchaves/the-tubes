@@ -15,7 +15,7 @@ node bin/tt.js expose --local-port 3000 --server-url http://localhost:8000
 # → publicUrl: http://abc123.tt.localhost:8000
 
 # Admin dashboard (real-time traffic + tunnel status)
-# → http://localhost:8000/admin
+# → http://localhost:8000/tubes
 
 # Replay captured webhook requests
 node bin/tt.js replay --manifest ./flows/onboarding.yaml --target-url http://localhost:3000/webhook
@@ -56,10 +56,11 @@ Use `tt <command> --help` for full flag reference.
 ## Development
 
 ```sh
-task test          # run all tests
+task test          # unit + integration (fast feedback, default CI gate)
 task test:unit
 task test:integration
-task test:e2e
+task test:regression
+task test:all      # all suites — run before releases
 task lint          # node --check on all JS files
 task docker:up     # server + expose + whoami demo app via compose
 ```

@@ -7,6 +7,7 @@ import { TunnelManager } from './tunnel-manager.js';
 import { createApiServer } from './api-server.js';
 import { createHmacMiddleware } from './hmac-middleware.js';
 import { handleAdminRequest } from './router.js';
+import { tryHandleControlUpgrade } from './control-upgrade.js';
 import { GlobalEventLog } from './admin/event-log.js';
 import { RateLimiter } from './rate-limiter.js';
 import { BlocklistManager } from './blocklist.js';
@@ -150,6 +151,8 @@ export async function runServe(config) {
   publicServer.on('upgrade', (req, socket, head) => {
     const tunnelId = extractTunnelId(req.headers.host, config.publicDomain);
     if (!tunnelId) {
+      // Could be a control-channel upgrade on the shared public port (no separate apiPort).
+      if (!config.apiPort && tryHandleControlUpgrade({ req, socket, manager, config, hmacVerify, globalLog })) return;
       socket.write('HTTP/1.1 404 Not Found\r\nX-TT-Source: server\r\n\r\n');
       return socket.end();
     }

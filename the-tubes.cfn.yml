@@ -278,6 +278,7 @@ Parameters:
 
   HmacSecret:
     Type: String
+    NoEcho: true
     Default: ""
     Description: HMAC-SHA256 shared secret for tunnel creation auth (min 32 chars, leave empty to disable). Generate with - openssl rand -hex 32
     AllowedPattern: ^$|^.{32,}$
@@ -526,6 +527,7 @@ Resources:
                 - tt_net
               command:
                 - "--api.dashboard=true"
+                - "--api.insecure=false"
                 - "--entrypoints.web.address=:80"
                 - "--entrypoints.websecure.address=:443"
                 - "--entrypoints.dashboard.address=:${DashboardPort}"
@@ -634,25 +636,66 @@ Resources:
             traefik-data:
           COMPOSE_EOF
 
-          log_step "Patching docker-compose.yml (HTTPS/TLS labels)"
-          if [ "${SecureTraffic}" = "true" ]; then
-            sed -i '/# PUBLIC_HTTP_MIDDLEWARE_PLACEHOLDER/c\      - "traefik.http.routers.tt-public-http.middlewares=https-redirect,public-rl"' docker-compose.yml
-            sed -i '/# HTTPS_LABELS_PLACEHOLDER/c\      - "traefik.http.routers.tt-admin.tls=true"\n      - "traefik.http.routers.tt-admin.tls.certresolver=letsencrypt"\n      - "traefik.http.routers.tt-public.rule=HostRegexp(`^[a-zA-Z0-9-]+[.]DOMAIN_PLACEHOLDER$`)"\n      - "traefik.http.routers.tt-public.entrypoints=websecure"\n      - "traefik.http.routers.tt-public.middlewares=public-rl"\n      - "traefik.http.routers.tt-public.service=tt-public-svc"\n      - "traefik.http.routers.tt-public.tls=true"\n      - "traefik.http.routers.tt-public.tls.certresolver=letsencrypt"\n      - "traefik.http.routers.tt-public.tls.domains[0].main=DOMAIN_PLACEHOLDER"\n      - "traefik.http.routers.tt-public.tls.domains[0].sans=*.DOMAIN_PLACEHOLDER"\n      - "traefik.http.routers.tt-public.priority=10"\n      - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"\n      - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"' docker-compose.yml
-            sed -i '/# DASHBOARD_TLS_PLACEHOLDER/c\      - "traefik.http.routers.traefik-dashboard.tls=true"\n      - "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"' docker-compose.yml
-            sed -i '/# SERVER_ADMIN_TLS_PLACEHOLDER/c\      - "traefik.http.routers.tt-server-admin.tls=true"\n      - "traefik.http.routers.tt-server-admin.tls.certresolver=letsencrypt"' docker-compose.yml
-          else
-            sed -i '/# PUBLIC_HTTP_MIDDLEWARE_PLACEHOLDER/c\      - "traefik.http.routers.tt-public-http.middlewares=public-rl"' docker-compose.yml
-            sed -i '/# HTTPS_LABELS_PLACEHOLDER/d' docker-compose.yml
-            sed -i '/# DASHBOARD_TLS_PLACEHOLDER/d' docker-compose.yml
-            sed -i '/# SERVER_ADMIN_TLS_PLACEHOLDER/d' docker-compose.yml
-          fi
-          log_ok "docker-compose.yml patched"
+          chmod 600 docker-compose.yml
+          log_ok "docker-compose.yml written (mode 600)"
 
-          log_step "Replacing placeholders (domain=$CUSTOM_DOMAIN, acme=$ACME_SERVER, uid=$THETUBES_UID:$THETUBES_GID)"
-          sed -i "s|ACME_SERVER_PLACEHOLDER|$ACME_SERVER|g" docker-compose.yml
-          sed -i "s/DOMAIN_PLACEHOLDER/$CUSTOM_DOMAIN/g" docker-compose.yml
-          sed -i "s/THETUBES_UID_PLACEHOLDER/$THETUBES_UID:$THETUBES_GID/" docker-compose.yml
-          log_ok "placeholders replaced"
+          log_step "Patching docker-compose.yml (HTTPS/TLS labels and runtime values)"
+          export PATCH_DOMAIN="$CUSTOM_DOMAIN"
+          export PATCH_ACME="$ACME_SERVER"
+          export PATCH_UID="$THETUBES_UID:$THETUBES_GID"
+          export PATCH_SECURE="${SecureTraffic}"
+          python3 << 'PYEOF'
+          import os
+
+          domain  = os.environ['PATCH_DOMAIN']
+          acme    = os.environ['PATCH_ACME']
+          uid_gid = os.environ['PATCH_UID']
+          secure  = os.environ['PATCH_SECURE'] == 'true'
+          IND     = '      '
+
+          with open('docker-compose.yml') as f:
+              lines = f.readlines()
+
+          out = []
+          for line in lines:
+              s = line.rstrip('\n')
+              s = s.replace('DOMAIN_PLACEHOLDER', domain)
+              s = s.replace('ACME_SERVER_PLACEHOLDER', acme)
+              s = s.replace('THETUBES_UID_PLACEHOLDER', uid_gid)
+
+              if '# PUBLIC_HTTP_MIDDLEWARE_PLACEHOLDER' in s:
+                  mw = 'https-redirect,public-rl' if secure else 'public-rl'
+                  out.append(IND + '- "traefik.http.routers.tt-public-http.middlewares=' + mw + '"\n')
+              elif '# HTTPS_LABELS_PLACEHOLDER' in s:
+                  if secure:
+                      out.append(IND + '- "traefik.http.routers.tt-admin.tls=true"\n')
+                      out.append(IND + '- "traefik.http.routers.tt-admin.tls.certresolver=letsencrypt"\n')
+                      out.append(IND + '- "traefik.http.routers.tt-public.rule=HostRegexp(`^[a-zA-Z0-9-]+[.]' + domain + '$`)"\n')
+                      out.append(IND + '- "traefik.http.routers.tt-public.entrypoints=websecure"\n')
+                      out.append(IND + '- "traefik.http.routers.tt-public.middlewares=public-rl"\n')
+                      out.append(IND + '- "traefik.http.routers.tt-public.service=tt-public-svc"\n')
+                      out.append(IND + '- "traefik.http.routers.tt-public.tls=true"\n')
+                      out.append(IND + '- "traefik.http.routers.tt-public.tls.certresolver=letsencrypt"\n')
+                      out.append(IND + '- "traefik.http.routers.tt-public.tls.domains[0].main=' + domain + '"\n')
+                      out.append(IND + '- "traefik.http.routers.tt-public.tls.domains[0].sans=*.' + domain + '"\n')
+                      out.append(IND + '- "traefik.http.routers.tt-public.priority=10"\n')
+                      out.append(IND + '- "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"\n')
+                      out.append(IND + '- "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"\n')
+              elif '# DASHBOARD_TLS_PLACEHOLDER' in s:
+                  if secure:
+                      out.append(IND + '- "traefik.http.routers.traefik-dashboard.tls=true"\n')
+                      out.append(IND + '- "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"\n')
+              elif '# SERVER_ADMIN_TLS_PLACEHOLDER' in s:
+                  if secure:
+                      out.append(IND + '- "traefik.http.routers.tt-server-admin.tls=true"\n')
+                      out.append(IND + '- "traefik.http.routers.tt-server-admin.tls.certresolver=letsencrypt"\n')
+              else:
+                  out.append(s + '\n')
+
+          with open('docker-compose.yml', 'w') as f:
+              f.writelines(out)
+          PYEOF
+          log_ok "docker-compose.yml patched and placeholders replaced"
 
           log_step "Pulling Docker images"
           docker pull traefik:v3.6.13

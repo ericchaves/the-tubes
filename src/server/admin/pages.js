@@ -67,9 +67,10 @@ tr:hover td{background:var(--surface2)}
 .log-type{font-size:11px;font-weight:700;white-space:nowrap}
 .log-detail{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
 .t-created{color:var(--blue)}.t-connected,.t-reconnected,.t-complete{color:var(--green)}
-.t-disconnected,.t-aborted,.t-ws-closed{color:var(--orange)}
-.t-expired,.t-destroyed,.t-failed,.t-ws-failed{color:var(--red)}
+.t-disconnected,.t-aborted,.t-ws-closed,.t-ctrl-down{color:var(--orange)}
+.t-expired,.t-destroyed,.t-failed,.t-ws-failed,.t-pair-refused{color:var(--red)}
 .t-received{color:var(--gray)}.t-delivered{color:var(--cyan)}.t-ws{color:var(--purple)}
+.t-ctrl{color:var(--green)}.t-ctrl-resume{color:var(--blue)}.t-pair{color:var(--cyan)}.t-pair-closed{color:var(--gray)}
 .t-blocked{color:var(--red)}.t-unblocked{color:var(--gray)}.t-banned{color:var(--orange)}
 .t-unbanned{color:var(--green)}.t-rotated{color:var(--blue)}
 .stats{display:flex;gap:20px;padding:10px 14px;font-size:12px;color:var(--dim);border-bottom:1px solid var(--border);flex-wrap:wrap}
@@ -98,11 +99,17 @@ const CLIENT_SHARED_JS = `
 function esc(s){const d=document.createElement('span');d.textContent=String(s??'');return d.textContent}
 const TYPE_META={
   'tunnel.created':         ['t-created',    'CREATED'],
-  'tunnel.connected':       ['t-connected',  'CONNECTED'],
-  'tunnel.disconnected':    ['t-disconnected','DISCONNECTED'],
-  'tunnel.reconnected':     ['t-reconnected','RECONNECTED'],
   'tunnel.window_expired':  ['t-expired',    'WIN EXPIRED'],
   'tunnel.destroyed':       ['t-destroyed',  'DESTROYED'],
+  'control.connected':      ['t-ctrl',       'CTRL UP'],
+  'control.resumed':        ['t-ctrl-resume','CTRL RESUME'],
+  'control.disconnected':   ['t-ctrl-down',  'CTRL DOWN'],
+  'control.heartbeat_timeout': ['t-ctrl-down','CTRL TIMEOUT'],
+  'pair.requested':         ['t-pair',       'PAIR REQ'],
+  'pair.opened':            ['t-pair',       'PAIR OPEN'],
+  'pair.replaced':          ['t-ctrl-resume','PAIR REPLACE'],
+  'pair.local_refused':     ['t-pair-refused','LOCAL REFUSED'],
+  'pair.closed':            ['t-pair-closed','PAIR CLOSED'],
   'request.received':       ['t-received',   'REQ \u2192'],
   'request.waiting':        ['t-received',   'WAITING'],
   'request.delivered':      ['t-delivered',  'DELIVERED'],
@@ -126,19 +133,25 @@ function fmtTime(ts){const d=new Date(ts);return d.toTimeString().slice(0,8)+'.'
 function eventSummary(e){
   switch(e.type){
     case'tunnel.created':return'port '+e.port+'  max '+e.maxConnections+' conns  token '+e.sessionTokenPrefix+'\u2026';
-    case'tunnel.connected':return e.socketCount+' socket'+(e.socketCount!==1?'s':'')+' in pool'+(e.clientIp?' from '+e.clientIp:'');
-    case'tunnel.disconnected':return'reconnect window '+e.reconnectWindowMs+'ms';
-    case'tunnel.reconnected':return e.socketCount+' socket'+(e.socketCount!==1?'s':'')+' in pool'+(e.clientIp?' from '+e.clientIp:'');
     case'tunnel.window_expired':return'no reconnect within window \u2014 tunnel closed';
     case'tunnel.destroyed':return'';
-    case'request.received':return(e.method||'?')+' '+e.path+'  from '+(e.remoteAddr||'?');
+    case'control.connected':return(e.controlId||'').slice(0,8)+'\u2026  from '+(e.remoteAddr||'?');
+    case'control.resumed':return(e.controlId||'').slice(0,8)+'\u2026 replaces '+(e.previousControlId||'').slice(0,8)+'\u2026  keep='+(e.keptPairs||0)+' drop='+(e.droppedPairs||0);
+    case'control.disconnected':return'reason: '+e.reason+'  inflight: '+((e.inflightPairs||[]).length)+(e.durationMs?'  uptime: '+Math.round(e.durationMs/1000)+'s':'');
+    case'control.heartbeat_timeout':return'last pong '+Math.round((e.lastPongAgoMs||0)/1000)+'s ago';
+    case'pair.requested':return(e.kind||'?')+'  '+(e.method||'?')+' '+e.path+'  from '+(e.remoteAddr||'?');
+    case'pair.opened':return e.pairId+'  req '+(e.requestId||'?').slice(0,6);
+    case'pair.replaced':return e.pairId+'  was '+(e.previousControlId||'').slice(0,8)+'\u2026';
+    case'pair.local_refused':return e.pairId+'  reason: '+e.reason;
+    case'pair.closed':return e.pairId+'  '+e.reason+'  '+e.durationMs+'ms  \u2191'+fmtBytes(e.bytesIn||0)+' \u2193'+fmtBytes(e.bytesOut||0);
+    case'request.received':return(e.method||'?')+' '+e.path;
     case'request.waiting':return(e.method||'?')+' '+e.path+'  waiting for socket\u2026';
-    case'request.delivered':return(e.method||'?')+' '+e.path+'  pool: '+e.socketPoolRemaining+' remaining';
+    case'request.delivered':return(e.method||'?')+' '+e.path+'  pair: '+(e.pairId||'?');
     case'request.failed':return(e.method||'?')+' '+e.path+'  reason: '+e.reason+'  sent: '+e.statusSent;
     case'response.complete':return(e.method||'?')+' '+e.path+'  '+(e.status||'?')+'  '+e.durationMs+'ms  \u2191'+fmtBytes(e.bytesIn)+' \u2193'+fmtBytes(e.bytesOut);
     case'response.aborted':return(e.method||'?')+' '+e.path+'  '+(e.status||'?')+'  '+e.reason+'  '+e.durationMs+'ms  \u2193'+fmtBytes(e.bytesOut);
     case'ws.received':return e.path+'  from '+(e.remoteAddr||'?');
-    case'ws.delivered':return e.path+'  pool: '+e.socketPoolRemaining+' remaining';
+    case'ws.delivered':return e.path+'  pair: '+(e.pairId||'?');
     case'ws.failed':return e.path+'  reason: '+e.reason;
     case'ws.closed':return e.path+'  '+e.reason+'  '+e.durationMs+'ms  \u2191'+fmtBytes(e.bytesIn)+' \u2193'+fmtBytes(e.bytesOut);
     case'server.error':{
@@ -501,7 +514,7 @@ function renderTunnels() {
     // Plain text cells
     const cells = [
       t.port ?? '\u2014',
-      (t.socketCount ?? 0) + ' / ' + (t.maxConnections ?? '?'),
+      (t.activeCount ?? 0) + ' / ' + (t.maxConnections ?? '?'),
       t.created ? new Date(t.created).toLocaleTimeString() : '\u2014',
       t.reqCount ?? 0,
       t.failCount ?? 0,
@@ -530,9 +543,9 @@ function handleEvent(e) {
       for (const t of (e.tunnels ?? [])) {
         tunnels.set(t.tunnelId, {
           id: t.tunnelId,
-          status: t.connected ? 'connected' : 'disconnected',
+          status: t.controlConnected ? 'connected' : 'disconnected',
           port: t.port, maxConnections: t.maxConnections,
-          socketCount: t.availableConnections,
+          activeCount: t.activeConnections ?? 0,
           created: t.createdAt,
           reqCount: 0, failCount: 0, lastActivity: null,
         });
@@ -541,21 +554,27 @@ function handleEvent(e) {
       return;
     case 'tunnel.created':
       tunnels.set(e.tunnelId, {
-        id: e.tunnelId, status: 'connected',
+        id: e.tunnelId, status: 'disconnected',
         port: e.port, maxConnections: e.maxConnections,
-        socketCount: 0, created: e.ts,
+        activeCount: 0, created: e.ts,
         reqCount: 0, failCount: 0, lastActivity: null,
       });
       renderTunnels();
       break;
-    case 'tunnel.connected':
-      updateTunnel(e.tunnelId, { status: 'connected', socketCount: e.socketCount });
+    case 'control.connected':
+    case 'control.resumed':
+      updateTunnel(e.tunnelId, { status: 'connected' });
       break;
-    case 'tunnel.disconnected':
+    case 'control.disconnected':
+    case 'control.heartbeat_timeout':
       updateTunnel(e.tunnelId, { status: 'disconnected' });
       break;
-    case 'tunnel.reconnected':
-      updateTunnel(e.tunnelId, { status: 'connected', socketCount: e.socketCount });
+    case 'pair.opened':
+      updateTunnel(e.tunnelId, { activeCount: (tunnels.get(e.tunnelId)?.activeCount ?? 0) + 1 });
+      break;
+    case 'pair.closed':
+    case 'pair.local_refused':
+      updateTunnel(e.tunnelId, { activeCount: Math.max(0, (tunnels.get(e.tunnelId)?.activeCount ?? 0) - 1) });
       break;
     case 'tunnel.window_expired':
       updateTunnel(e.tunnelId, { status: 'expired' });
@@ -587,9 +606,9 @@ function handleEvent(e) {
   ]);
   // Tunnel lifecycle events shown in server activity log
   const ADMIN_EVENTS = new Set([
-    'tunnel.created','tunnel.connected','tunnel.disconnected',
-    'tunnel.reconnected','tunnel.window_expired','tunnel.destroyed',
-    'request.failed','response.aborted','ws.failed',
+    'tunnel.created','tunnel.window_expired','tunnel.destroyed',
+    'control.connected','control.resumed','control.disconnected','control.heartbeat_timeout',
+    'request.failed','response.aborted','ws.failed','pair.local_refused',
   ]);
   const showInLog = e.type === 'server.error'
     || SECURITY_EVENTS.has(e.type)
@@ -662,7 +681,7 @@ export function adminTunnelPage(tunnelId) {
     <div id="status-wrap" class="collapsible">
       <div class="stats">
         <span>Port: <strong id="tunnel-port">\u2014</strong></span>
-        <span>Sockets: <strong id="tunnel-sockets">\u2014</strong></span>
+        <span>Active pairs: <strong id="tunnel-sockets">\u2014</strong></span>
         <span>Max: <strong id="tunnel-maxconn">\u2014</strong></span>
         <span>Created: <strong id="tunnel-created">\u2014</strong></span>
         <span>Requests ok: <strong id="tunnel-reqs">0</strong></span>
@@ -715,29 +734,37 @@ function handleEvent(e) {
       const t = (e.tunnels ?? []).find(t => t.tunnelId === tunnelId);
       if (t) {
         setField('tunnel-port', t.port ?? '\u2014');
-        setField('tunnel-sockets', t.availableConnections ?? 0);
+        setField('tunnel-sockets', t.activeConnections ?? 0);
         setField('tunnel-maxconn', t.maxConnections ?? '\u2014');
         setField('tunnel-created', t.createdAt ? new Date(t.createdAt).toLocaleTimeString() : '\u2014');
-        updateStatus(t.connected ? 'connected' : 'disconnected');
+        updateStatus(t.controlConnected ? 'connected' : 'disconnected');
       }
       return;
     }
     case 'tunnel.created':
       setField('tunnel-port', e.port ?? '\u2014');
       setField('tunnel-maxconn', e.maxConnections ?? '\u2014');
-      updateStatus('connected');
-      break;
-    case 'tunnel.connected':
-      setField('tunnel-sockets', e.socketCount);
-      updateStatus('connected');
-      break;
-    case 'tunnel.disconnected':
       updateStatus('disconnected');
       break;
-    case 'tunnel.reconnected':
-      setField('tunnel-sockets', e.socketCount);
+    case 'control.connected':
+    case 'control.resumed':
       updateStatus('connected');
       break;
+    case 'control.disconnected':
+    case 'control.heartbeat_timeout':
+      updateStatus('disconnected');
+      break;
+    case 'pair.opened': {
+      const cur = parseInt(document.getElementById('tunnel-sockets')?.textContent || '0', 10) || 0;
+      setField('tunnel-sockets', cur + 1);
+      break;
+    }
+    case 'pair.closed':
+    case 'pair.local_refused': {
+      const cur = parseInt(document.getElementById('tunnel-sockets')?.textContent || '0', 10) || 0;
+      setField('tunnel-sockets', Math.max(0, cur - 1));
+      break;
+    }
     case 'tunnel.window_expired':
       updateStatus('expired');
       break;

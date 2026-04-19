@@ -34,19 +34,24 @@ export function maskHeaders(headers = {}) {
  *
  * Types emitted by ServerTunnel:
  *   tunnel.created       { port, maxConnections, reconnectWindowMs, sessionTokenPrefix }
- *   tunnel.connected     { port, socketCount }
- *   tunnel.disconnected  { reconnectWindowMs }
- *   tunnel.reconnected   { socketCount }
  *   tunnel.window_expired {}
  *   tunnel.destroyed     {}
- *   request.received     { requestId, method, path, remoteAddr, headers }
- *   request.waiting      { requestId, method, path }
- *   request.delivered    { requestId, method, path, socketPoolRemaining }
+ *   control.connected    { controlId, remoteAddr, keptPairs, droppedPairs }
+ *   control.resumed      { controlId, previousControlId, remoteAddr, keptPairs, droppedPairs }
+ *   control.disconnected { controlId, reason, durationMs, inflightPairs }
+ *   control.heartbeat_timeout { controlId, lastPongAgoMs }
+ *   pair.requested       { pairId, requestId, kind, method, path, remoteAddr }
+ *   pair.opened          { pairId, requestId }
+ *   pair.replaced        { pairId, previousControlId }
+ *   pair.local_refused   { pairId, requestId, reason }
+ *   pair.closed          { pairId, requestId, reason, bytesIn, bytesOut, durationMs }
+ *   request.received     { requestId, method, path, headers }
+ *   request.delivered    { requestId, method, path, pairId }
  *   request.failed       { requestId, method, path, reason, statusSent }
  *   response.complete    { requestId, method, path, status, bytesIn, bytesOut, durationMs }
  *   response.aborted     { requestId, method, path, reason, status, bytesIn, bytesOut, durationMs }
  *   ws.received          { requestId, path, remoteAddr }
- *   ws.delivered         { requestId, path, socketPoolRemaining }
+ *   ws.delivered         { requestId, path, pairId }
  *   ws.failed            { requestId, path, reason }
  *   ws.closed            { requestId, path, reason, bytesIn, bytesOut, durationMs }
  *

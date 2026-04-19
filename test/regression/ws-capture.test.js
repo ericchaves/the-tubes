@@ -19,6 +19,9 @@
  *     session, producing two .ws.yaml files for one exchange.
  *     Fix: remote.once('end') zeroes reqBufs after capturing so the local.once('close')
  *     handler finds no data and skips the second write.
+ *
+ * Architecture note: tests use MockControlChannel to trigger pair creation.
+ * The data server reads the TT/1 PAIR preamble before writing upgrade bytes.
  */
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -29,27 +32,26 @@ import { createServer as createTcpServer } from 'node:net';
 import { FailureTracker } from '../../src/client/failure-tracker.js';
 import { ReconnectPolicy } from '../../src/client/reconnect-policy.js';
 import { TunnelCluster } from '../../src/client/tunnel-cluster.js';
+import { MockControlChannel } from '../helpers/mock-control.js';
 import { parse } from '../../src/common/yaml-lite.js';
 
 // ─── WS frame helpers ─────────────────────────────────────────────────────────
 
-/** Masked client→server RFC 6455 text frame (payload ≤ 125 bytes). */
 function clientTextFrame(text) {
   const payload = Buffer.from(text, 'utf8');
   const maskKey = Buffer.from([0x37, 0x42, 0x1a, 0x2b]);
   const frame = Buffer.allocUnsafe(2 + 4 + payload.length);
-  frame[0] = 0x81; // FIN=1, opcode=1
+  frame[0] = 0x81;
   frame[1] = 0x80 | payload.length;
   maskKey.copy(frame, 2);
   for (let i = 0; i < payload.length; i++) frame[6 + i] = payload[i] ^ maskKey[i % 4];
   return frame;
 }
 
-/** Unmasked server→client RFC 6455 text frame (payload ≤ 125 bytes). */
 function serverTextFrame(text) {
   const payload = Buffer.from(text, 'utf8');
   const frame = Buffer.allocUnsafe(2 + payload.length);
-  frame[0] = 0x81; // FIN=1, opcode=1
+  frame[0] = 0x81;
   frame[1] = payload.length;
   payload.copy(frame, 2);
   return frame;
@@ -73,6 +75,7 @@ const HTTP_101_RESPONSE =
 // ─── Test infrastructure ──────────────────────────────────────────────────────
 
 function makeCluster(tunnelPort, localPort, captureDir) {
+  const control = new MockControlChannel();
   const info = {
     tunnelId: 'ws-test',
     tunnelHost: '127.0.0.1',
@@ -90,23 +93,36 @@ function makeCluster(tunnelPort, localPort, captureDir) {
   };
   const tracker = new FailureTracker({ windowS: 60, maxInWindow: 20, maxTotal: 100 });
   const policy = new ReconnectPolicy({ initialDelayMs: 10, maxDelayMs: 100 });
-  return new TunnelCluster(info, config, tracker, policy);
+  return { cluster: new TunnelCluster(info, config, tracker, policy, control), control };
 }
 
-/**
- * Create a TCP server that tracks all accepted sockets so they can be
- * force-destroyed on teardown — prevents server.close() from hanging.
- */
 function createTrackedServer(handler) {
   const sockets = new Set();
   const server = createTcpServer(sock => {
     sockets.add(sock);
-    sock.on('error', () => {}); // suppress ECONNRESET on force-close
+    sock.on('error', () => {});
     sock.once('close', () => sockets.delete(sock));
     handler(sock);
   });
   server._trackedSockets = sockets;
   return server;
+}
+
+/**
+ * Data server that consumes the TT/1 PAIR preamble before handing the socket
+ * to the provided handler.
+ */
+function createDataServer(handler) {
+  return createTrackedServer(sock => {
+    let buf = Buffer.alloc(0);
+    const onData = chunk => {
+      buf = Buffer.concat([buf, chunk]);
+      if (buf.indexOf('\n') === -1) return;
+      sock.removeListener('data', onData);
+      handler(sock);
+    };
+    sock.on('data', onData);
+  });
 }
 
 function listen(server) {
@@ -118,9 +134,7 @@ function stopTracked(server) {
   return new Promise(r => server.close(r));
 }
 
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 function wsFiles(dir) {
   return readdirSync(dir).filter(f => f.endsWith('.ws.yaml'));
@@ -144,7 +158,6 @@ describe('WS-1: ws_graceful_capture — capture fires immediately via remote.onc
   afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 
   it('writes a .ws.yaml when tunnel server sends FIN (graceful close)', async () => {
-    // Fake local WS service: sends 101 + one echo frame
     const localServer = createTrackedServer(sock => {
       sock.write(Buffer.concat([
         Buffer.from(HTTP_101_RESPONSE),
@@ -153,25 +166,24 @@ describe('WS-1: ws_graceful_capture — capture fires immediately via remote.onc
     });
     await listen(localServer);
 
-    // Fake tunnel server: sends Upgrade request + masked client frame, then ends gracefully
-    const tunnelServer = createTrackedServer(sock => {
+    // Data server: consume preamble, then send Upgrade request + client frame, then FIN.
+    const dataServer = createDataServer(sock => {
       sock.write(Buffer.concat([
         Buffer.from(HTTP_UPGRADE_REQUEST),
         clientTextFrame('hi'),
       ]));
-      // Let the local service response flow into resBufs before capturing
       setTimeout(() => sock.end(), 30);
     });
-    await listen(tunnelServer);
+    await listen(dataServer);
 
-    const cluster = makeCluster(
-      tunnelServer.address().port,
+    const { cluster, control } = makeCluster(
+      dataServer.address().port,
       localServer.address().port,
       tmpDir,
     );
 
     const captureP = awaitCapture(cluster);
-    cluster.openOne().catch(() => {});
+    control.openPair({ kind: 'ws', method: 'GET', path: '/echo' });
     const captured = await captureP;
 
     assert.equal(captured.method, 'WS');
@@ -195,7 +207,7 @@ describe('WS-1: ws_graceful_capture — capture fires immediately via remote.onc
 
     cluster.close();
     await stopTracked(localServer);
-    await stopTracked(tunnelServer);
+    await stopTracked(dataServer);
   });
 });
 
@@ -215,24 +227,23 @@ describe('WS-2: ws_force_close_capture — local.destroy() called on remote RST 
     });
     await listen(localServer);
 
-    // Fake tunnel server: sends Upgrade + client frame, then force-closes with RST
-    const tunnelServer = createTrackedServer(sock => {
+    const dataServer = createDataServer(sock => {
       sock.write(Buffer.concat([
         Buffer.from(HTTP_UPGRADE_REQUEST),
         clientTextFrame('hello'),
       ]));
       setTimeout(() => sock.resetAndDestroy(), 20);
     });
-    await listen(tunnelServer);
+    await listen(dataServer);
 
-    const cluster = makeCluster(
-      tunnelServer.address().port,
+    const { cluster, control } = makeCluster(
+      dataServer.address().port,
       localServer.address().port,
       tmpDir,
     );
 
     const captureP = awaitCapture(cluster);
-    cluster.openOne().catch(() => {});
+    control.openPair({ kind: 'ws', method: 'GET', path: '/echo' });
     const captured = await captureP;
 
     assert.equal(captured.method, 'WS');
@@ -250,7 +261,7 @@ describe('WS-2: ws_force_close_capture — local.destroy() called on remote RST 
 
     cluster.close();
     await stopTracked(localServer);
-    await stopTracked(tunnelServer);
+    await stopTracked(dataServer);
   });
 });
 
@@ -262,9 +273,6 @@ describe('WS-3: ws_no_double_capture — exactly one .ws.yaml written per sessio
   afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 
   it('writes exactly one .ws.yaml even when both remote.once("end") and local.once("close") fire', async () => {
-    // Graceful close triggers remote.once('end') first — captures + zeroes reqBufs.
-    // Then remote.once('close') fires → pair.local.destroy() → local.once('close') fires.
-    // Without reqBufs.length=0 guard, local.once('close') would write a second file.
     const localServer = createTrackedServer(sock => {
       sock.write(Buffer.concat([
         Buffer.from(HTTP_101_RESPONSE),
@@ -273,26 +281,25 @@ describe('WS-3: ws_no_double_capture — exactly one .ws.yaml written per sessio
     });
     await listen(localServer);
 
-    const tunnelServer = createTrackedServer(sock => {
+    const dataServer = createDataServer(sock => {
       sock.write(Buffer.concat([
         Buffer.from(HTTP_UPGRADE_REQUEST),
         clientTextFrame('ping'),
       ]));
       setTimeout(() => sock.end(), 30);
     });
-    await listen(tunnelServer);
+    await listen(dataServer);
 
-    const cluster = makeCluster(
-      tunnelServer.address().port,
+    const { cluster, control } = makeCluster(
+      dataServer.address().port,
       localServer.address().port,
       tmpDir,
     );
 
     const captureP = awaitCapture(cluster);
-    cluster.openOne().catch(() => {});
+    control.openPair({ kind: 'ws', method: 'GET', path: '/echo' });
     await captureP;
 
-    // Wait for any spurious second write to materialise
     await sleep(80);
 
     const files = wsFiles(tmpDir);
@@ -301,6 +308,6 @@ describe('WS-3: ws_no_double_capture — exactly one .ws.yaml written per sessio
 
     cluster.close();
     await stopTracked(localServer);
-    await stopTracked(tunnelServer);
+    await stopTracked(dataServer);
   });
 });

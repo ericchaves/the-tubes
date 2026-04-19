@@ -15,7 +15,12 @@
  *               triggering reconnect_loop_detected before any retry could happen.
  *
  *   R9 validates the recovery path: after ECONNREFUSED (budget untouched), a new
- *   openOne() must succeed once the local app is back on the same port.
+ *   pair.open must succeed once the local app is back on the same port.
+ *
+ * Architecture note: pairs are opened on demand via MockControlChannel.openPair().
+ * The data server (accepting server representing the tt-server data port) accepts
+ * the cluster's data socket — there is no data exchange in these tests, only
+ * local connection lifecycle events are under test.
  *
  * NOTE on RST simulation (R8):
  *   socket.destroy() on an idle TCP connection sends FIN (clean close), not RST.
@@ -29,68 +34,76 @@ import { createServer as createTcpServer } from 'node:net';
 import { FailureTracker } from '../../src/client/failure-tracker.js';
 import { ReconnectPolicy } from '../../src/client/reconnect-policy.js';
 import { TunnelCluster } from '../../src/client/tunnel-cluster.js';
+import { MockControlChannel } from '../helpers/mock-control.js';
 import { waitFor } from '../helpers/wait-for.js';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function createAcceptingServer() {
   return new Promise(resolve => {
-    const server = createTcpServer();
+    const sockets = new Set();
+    const server = createTcpServer(sock => {
+      sockets.add(sock);
+      sock.resume(); // flowing mode so FIN from data.end() is processed immediately
+      sock.on('error', () => {});
+      sock.once('close', () => sockets.delete(sock));
+    });
+    server._trackedSockets = sockets;
     server.listen(0, '127.0.0.1', () => resolve(server));
   });
 }
 
-function makeInfo(tunnelPort, localPort) {
-  return {
+function makeCluster(dataPort, localPort, opts = {}) {
+  const control = new MockControlChannel();
+  const info = {
     tunnelId: 'test-tunnel',
     tunnelHost: '127.0.0.1',
-    tunnelPort,
-    maxConnections: 2,
+    tunnelPort: dataPort,
+    maxConnections: opts.maxConnections ?? 2,
     publicUrl: 'http://test.example.com',
     reconnectWindowMs: 100,
   };
-}
-
-function makeConfig(localPort, overrides = {}) {
-  return {
+  const config = {
     localAddress: '127.0.0.1',
     localPort,
     localTls: false,
     rewriteHostHeader: false,
     reconnectLocal: true,
     captureDir: null,
-    ...overrides,
   };
+  const tracker = new FailureTracker(opts.tracker ?? { windowS: 60, maxInWindow: 10, maxTotal: 50 });
+  const policy = new ReconnectPolicy({ initialDelayMs: 10, maxDelayMs: 100 });
+  const cluster = new TunnelCluster(info, config, tracker, policy, control);
+  return { cluster, control, tracker };
 }
 
 function stopServer(server) {
   return new Promise(r => {
-    server.closeAllConnections?.();
+    // Use end() not destroy() so the peer doesn't receive ECONNRESET (which
+    // would trigger error handlers in still-live client sockets).
+    for (const s of server._trackedSockets ?? []) {
+      try { s.end(); } catch {}
+    }
     server.close(r);
   });
 }
 
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ─── R7: ECONNREFUSED is retriable and does not consume FailureTracker budget ─
 
 describe('R7: econnrefused_retriable — ECONNREFUSED is retriable and does not consume FailureTracker budget', () => {
   it('single ECONNREFUSED emits retriable=true and records zero failures', async () => {
-    const tunnelServer = await createAcceptingServer();
-
-    const tracker = new FailureTracker({ windowS: 60, maxInWindow: 10, maxTotal: 50 });
-    const policy = new ReconnectPolicy({ initialDelayMs: 10, maxDelayMs: 100 });
+    const dataServer = await createAcceptingServer();
 
     // Port 1: system-reserved, never listening → guaranteed ECONNREFUSED on non-root
-    const info = makeInfo(tunnelServer.address().port, 1);
-    const config = makeConfig(1);
-    const cluster = new TunnelCluster(info, config, tracker, policy);
+    const { cluster, control, tracker } = makeCluster(dataServer.address().port, 1, {
+      tracker: { windowS: 60, maxInWindow: 10, maxTotal: 50 },
+    });
 
     const dead = await new Promise(resolve => {
       cluster.once('tunnel:dead', resolve);
-      cluster.openOne().catch(() => {});
+      control.openPair();
     });
 
     assert.equal(dead.retriable, true,
@@ -103,30 +116,24 @@ describe('R7: econnrefused_retriable — ECONNREFUSED is retriable and does not 
       'single ECONNREFUSED must not trigger shouldGiveUp');
 
     cluster.close();
-    await stopServer(tunnelServer);
+    await stopServer(dataServer);
   });
 
   it('maxConnections simultaneous ECONNREFUSED events do not trigger shouldGiveUp', async () => {
-    // Regression: with maxConnections=5 and maxInWindow=10, 5 ECONNREFUSED firing at
-    // once (on startup against a down local app) must not exhaust the failure budget.
     const MAX_CONN = 5;
-    const tunnelServer = await createAcceptingServer();
+    const dataServer = await createAcceptingServer();
 
-    const tracker = new FailureTracker({ windowS: 60, maxInWindow: 10, maxTotal: 50 });
-    const policy = new ReconnectPolicy({ initialDelayMs: 10, maxDelayMs: 100 });
-
-    const info = { ...makeInfo(tunnelServer.address().port, 1), maxConnections: MAX_CONN };
-    const config = makeConfig(1);
-    const cluster = new TunnelCluster(info, config, tracker, policy);
+    const { cluster, control, tracker } = makeCluster(dataServer.address().port, 1, {
+      maxConnections: MAX_CONN,
+      tracker: { windowS: 60, maxInWindow: 10, maxTotal: 50 },
+    });
 
     let deadCount = 0;
     const allDead = new Promise(resolve => {
       cluster.on('tunnel:dead', () => { if (++deadCount >= MAX_CONN) resolve(); });
     });
 
-    await Promise.allSettled(
-      Array.from({ length: MAX_CONN }, () => cluster.openOne().catch(() => {}))
-    );
+    for (let i = 0; i < MAX_CONN; i++) control.openPair();
     await allDead;
 
     assert.equal(tracker.totalFailures, 0,
@@ -135,7 +142,7 @@ describe('R7: econnrefused_retriable — ECONNREFUSED is retriable and does not 
       'ECONNREFUSED storm must not trigger shouldGiveUp — local app may come back up');
 
     cluster.close();
-    await stopServer(tunnelServer);
+    await stopServer(dataServer);
   });
 });
 
@@ -148,17 +155,15 @@ describe('R8: crash_no_double_count — ECONNRESET on established connection is 
     await new Promise(r => rstServer.listen(0, '127.0.0.1', r));
     const rstPort = rstServer.address().port;
 
-    const tunnelServer = await createAcceptingServer();
-    const tracker = new FailureTracker({ windowS: 60, maxInWindow: 20, maxTotal: 100 });
-    const policy = new ReconnectPolicy({ initialDelayMs: 10 });
-
-    const info = makeInfo(tunnelServer.address().port, rstPort);
-    const config = makeConfig(rstPort);
-    const cluster = new TunnelCluster(info, config, tracker, policy);
+    const dataServer = await createAcceptingServer();
+    const { cluster, control, tracker } = makeCluster(dataServer.address().port, rstPort, {
+      tracker: { windowS: 60, maxInWindow: 20, maxTotal: 100 },
+    });
 
     const openP = new Promise(resolve => cluster.once('open', resolve));
-    await cluster.openOne();
+    control.openPair();
     await openP;
+
     await waitFor(() => serverSockets.length >= 1, {
       timeoutMs: 1000, message: 'local connection accepted by server',
     });
@@ -173,14 +178,10 @@ describe('R8: crash_no_double_count — ECONNRESET on established connection is 
 
     cluster.close();
     await stopServer(rstServer);
-    await stopServer(tunnelServer);
+    await stopServer(dataServer);
   });
 
   it('maxConnections simultaneous app crashes register N failures, not 2N', async () => {
-    // Reproduces the exact Docker scenario: fake-app crashes (exit code 2),
-    // all N established local connections get RST simultaneously.
-    // Before the fix: N×2 = 10 failures → shouldGiveUp() → reconnect_loop_detected.
-    // After the fix:  N×1 = 5 failures → shouldGiveUp() = false → client keeps waiting.
     const MAX_CONN = 5;
 
     const serverSockets = [];
@@ -188,22 +189,19 @@ describe('R8: crash_no_double_count — ECONNRESET on established connection is 
     await new Promise(r => rstServer.listen(0, '127.0.0.1', r));
     const rstPort = rstServer.address().port;
 
-    const tunnelServer = await createAcceptingServer();
-    const tracker = new FailureTracker({ windowS: 60, maxInWindow: 10, maxTotal: 50 });
-    const policy = new ReconnectPolicy({ initialDelayMs: 10 });
-
-    const info = { ...makeInfo(tunnelServer.address().port, rstPort), maxConnections: MAX_CONN };
-    const config = makeConfig(rstPort);
-    const cluster = new TunnelCluster(info, config, tracker, policy);
+    const dataServer = await createAcceptingServer();
+    const { cluster, control, tracker } = makeCluster(dataServer.address().port, rstPort, {
+      maxConnections: MAX_CONN,
+      tracker: { windowS: 60, maxInWindow: 10, maxTotal: 50 },
+    });
 
     let openCount = 0;
     const allOpened = new Promise(resolve => {
       cluster.on('open', () => { if (++openCount >= MAX_CONN) resolve(); });
     });
-    await Promise.allSettled(
-      Array.from({ length: MAX_CONN }, () => cluster.openOne().catch(() => {}))
-    );
+    for (let i = 0; i < MAX_CONN; i++) control.openPair();
     await allOpened;
+
     await waitFor(() => serverSockets.length >= MAX_CONN, {
       timeoutMs: 2000, message: `all ${MAX_CONN} local connections accepted`,
     });
@@ -223,30 +221,25 @@ describe('R8: crash_no_double_count — ECONNRESET on established connection is 
 
     cluster.close();
     await stopServer(rstServer);
-    await stopServer(tunnelServer);
+    await stopServer(dataServer);
   });
 });
 
 // ─── R9: pairs reopen successfully once the local app comes back ──────────────
 
 describe('R9: local_app_recovery — pairs reopen successfully once the local app comes back', () => {
-  it('openOne succeeds after the local app restarts following ECONNREFUSED', async () => {
+  it('pair opens successfully after the local app restarts following ECONNREFUSED', async () => {
     const portClaimer = await createAcceptingServer();
     const localPort = portClaimer.address().port;
     await stopServer(portClaimer);
 
-    const tunnelServer = await createAcceptingServer();
-    const tracker = new FailureTracker({ windowS: 60, maxInWindow: 10, maxTotal: 50 });
-    const policy = new ReconnectPolicy({ initialDelayMs: 10, maxDelayMs: 100 });
-
-    const info = makeInfo(tunnelServer.address().port, localPort);
-    const config = makeConfig(localPort);
-    const cluster = new TunnelCluster(info, config, tracker, policy);
+    const dataServer = await createAcceptingServer();
+    const { cluster, control, tracker } = makeCluster(dataServer.address().port, localPort);
 
     // Phase 1: local port closed → ECONNREFUSED → retriable, budget untouched
     const dead = await new Promise(resolve => {
       cluster.once('tunnel:dead', resolve);
-      cluster.openOne().catch(() => {});
+      control.openPair();
     });
 
     assert.equal(dead.retriable, true, 'ECONNREFUSED must be retriable');
@@ -258,9 +251,9 @@ describe('R9: local_app_recovery — pairs reopen successfully once the local ap
     const localServer = createTcpServer();
     await new Promise(resolve => localServer.listen(localPort, '127.0.0.1', resolve));
 
-    // Phase 3: openOne must now succeed
+    // Phase 3: next pair.open must succeed
     const openP = new Promise(resolve => cluster.once('open', resolve));
-    await cluster.openOne();
+    control.openPair();
     await openP;
 
     assert.ok(cluster.pairs.size >= 1,
@@ -268,6 +261,6 @@ describe('R9: local_app_recovery — pairs reopen successfully once the local ap
 
     cluster.close();
     await stopServer(localServer);
-    await stopServer(tunnelServer);
+    await stopServer(dataServer);
   });
 });

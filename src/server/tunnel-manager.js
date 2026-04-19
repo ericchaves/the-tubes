@@ -175,7 +175,8 @@ export class TunnelManager {
         port: t.port,
         maxConnections: t.maxConnections,
         createdAt: t.createdAt,
-        availableConnections: t.agent.availableCount,
+        activeConnections: t.agent.activeCount,
+        controlConnected: t.connected,
       });
     }
     return tunnels;

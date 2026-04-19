@@ -12,7 +12,10 @@ let _seq = 0;
  *   expose.started       { serverUrl, localAddress, localPort, tunnelSubdomain }
  *   tunnel.open          { tunnelId, publicUrl, maxConnections }
  *   tunnel.closed        { reason }
- *   pair.open            { pairId }
+ *   control.connected    { controlId }
+ *   control.resumed      { controlId, previousControlId, keptPairs, droppedPairs }
+ *   control.disconnected { reason }
+ *   pair.open            { pairId, requestId }
  *   pair.dead            { pairId, reason, kind, retriable }
  *   local.down           { address, port }
  *   local.up             { address, port }

@@ -136,6 +136,9 @@ const TYPE_META = {
   'expose.started':      ['t-expose',   'STARTED'],
   'tunnel.open':         ['t-tunnel',   'TUNNEL OPEN'],
   'tunnel.closed':       ['t-tunnel',   'TUNNEL CLOSED'],
+  'control.connected':   ['t-tunnel',   'CTRL UP'],
+  'control.resumed':     ['t-tunnel',   'CTRL RESUME'],
+  'control.disconnected':['t-failure',  'CTRL DOWN'],
   'pair.open':           ['t-pair',     'PAIR OPEN'],
   'pair.dead':           ['t-pair',     'PAIR DEAD'],
   'local.down':          ['t-local',    'LOCAL DOWN'],
@@ -156,6 +159,7 @@ const TYPE_META = {
 
 const EVENT_GROUPS = {
   'expose.started':'expose','tunnel.open':'tunnel','tunnel.closed':'tunnel',
+  'control.connected':'tunnel','control.resumed':'tunnel','control.disconnected':'tunnel',
   'pair.open':'pairs','pair.dead':'pairs',
   'local.down':'local','local.up':'local',
   'request':'requests','capture.saved':'requests',
@@ -182,7 +186,10 @@ function eventSummary(ev){
     case 'expose.started':    return ev.publicUrl ?? '';
     case 'tunnel.open':       return (ev.publicUrl??'') + (ev.maxConnections ? ' max='+ev.maxConnections : '');
     case 'tunnel.closed':     return ev.reason ?? '';
-    case 'pair.open':         return ev.pairId ?? '';
+    case 'control.connected': return 'controlId='+(ev.controlId??'').slice(0,8)+'…';
+    case 'control.resumed':   return (ev.controlId??'').slice(0,8)+'… replaces '+(ev.previousControlId??'').slice(0,8)+'… keep='+(ev.keptPairs??0)+' drop='+(ev.droppedPairs??0);
+    case 'control.disconnected': return ev.reason ?? '';
+    case 'pair.open':         return (ev.pairId??'')+(ev.requestId?' req '+ev.requestId.slice(0,6):'');
     case 'pair.dead':         return (ev.pairId??'')+' '+(ev.reason??'')+(ev.retriable?' [retry]':' [final]');
     case 'local.down':        return (ev.address??'')+(ev.port?':'+ev.port:'');
     case 'local.up':          return (ev.address??'')+(ev.port?':'+ev.port:'');

@@ -21,13 +21,18 @@
  *   SRV-6  No-body status (204) — response ends immediately after headers
  *   SRV-7  GET without body — req.close does not prematurely tear down tunnel
  *   SRV-8  Upstream closes without response — public client gets 502, not 200-empty
+ *
+ * Architecture note: tests use MockControlSession to drive the on-demand socket
+ * model.  The mock intercepts pair.open signals from ServerTunnel and opens a
+ * real data socket to the TunnelAgent with the correct TT/1 PAIR preamble,
+ * then calls the registered response handler when the relayed HTTP request arrives.
  */
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { connect as netConnect } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
 import { ServerTunnel } from '../../src/server/tunnel.js';
+import { MockControlSession } from '../helpers/mock-control.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -38,8 +43,11 @@ const DEFAULT_CONFIG = {
 };
 
 /**
- * Spin up a ServerTunnel + HTTP server.
- * Returns helpers to connect a fake tunnel socket and make HTTP requests.
+ * Spin up a ServerTunnel + MockControlSession + HTTP server.
+ *
+ * The mock control session is already attached and connected (handshake done).
+ * Each test calls control.prepareResponse(fn) before fetching to register the
+ * upstream response for that pair.
  */
 async function setup() {
   const tunnel = new ServerTunnel({
@@ -52,6 +60,10 @@ async function setup() {
   });
   await tunnel.agent.listen(0);
 
+  const control = new MockControlSession(tunnel.agent._assignedPort);
+  tunnel.attachControlSession(control);
+  control.handshake();
+
   const httpServer = createHttpServer((req, res) => {
     tunnel.handleRequest(req, res).catch(err => {
       if (!res.headersSent) { res.writeHead(500); res.end(err.message); }
@@ -59,66 +71,25 @@ async function setup() {
   });
   await new Promise(resolve => httpServer.listen(0, '127.0.0.1', resolve));
 
-  const agentPort = tunnel.agent._assignedPort;
-  const httpPort = httpServer.address().port;
-  const base = `http://127.0.0.1:${httpPort}`;
-
-  /**
-   * Connect a fake tunnel-client socket to the agent.
-   * When the server forwards an HTTP request to it, call `onRequest(rawBytes)`.
-   * The handler may return:
-   *   - a string/Buffer  → written to the socket and the socket is closed
-   *   - { reply, keepAlive: true } → written, but the socket is kept open
-   *     (simulates an upstream service using HTTP keep-alive, like n8n)
-   *   - { close: true }  → close the socket immediately without responding
-   *     (simulates a zombie pool socket closed by an intermediate proxy)
-   *   - null/undefined   → nothing is written
-   */
-  async function connectFakeSocket(onRequest) {
-    const sock = netConnect({ host: '127.0.0.1', port: agentPort });
-    await new Promise((resolve, reject) => {
-      sock.once('connect', resolve);
-      sock.once('error', reject);
-    });
-    let buf = Buffer.alloc(0);
-    let replied = false;
-    sock.on('data', chunk => {
-      buf = Buffer.concat([buf, chunk]);
-      if (replied) return;
-      if (buf.indexOf('\r\n\r\n') === -1) return;
-      replied = true;
-      const result = onRequest(buf);
-      if (!result) return;
-      if (typeof result === 'string' || Buffer.isBuffer(result)) {
-        sock.write(result);
-        sock.end();
-      } else if (result.close) {
-        sock.end();
-      } else if (result.reply) {
-        sock.write(result.reply);
-        if (!result.keepAlive) sock.end();
-      }
-    });
-    return sock;
-  }
+  const base = `http://127.0.0.1:${httpServer.address().port}`;
 
   async function stop() {
+    control.close();
     await new Promise(resolve => httpServer.close(resolve));
     tunnel.destroy();
   }
 
-  return { base, connectFakeSocket, stop };
+  return { base, control, stop };
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('SRV-1: response_relay_get_challenge — body is challenge value, not raw HTTP bytes', () => {
   it('WhatsApp-style GET verification returns plain challenge number as body', async () => {
-    const { base, connectFakeSocket, stop } = await setup();
-
+    const { base, control, stop } = await setup();
     const challenge = '265347610';
 
-    await connectFakeSocket(() =>
+    control.prepareResponse(() =>
       `HTTP/1.1 200 OK\r\n` +
       `Content-Type: text/plain\r\n` +
       `Content-Length: ${Buffer.byteLength(challenge)}\r\n` +
@@ -130,7 +101,6 @@ describe('SRV-1: response_relay_get_challenge — body is challenge value, not r
 
     assert.equal(res.status, 200, 'status must be 200');
     const body = await res.text();
-
     assert.ok(
       !body.startsWith('HTTP/'),
       `body must not contain raw HTTP framing — got: ${JSON.stringify(body.slice(0, 80))}`
@@ -144,11 +114,10 @@ describe('SRV-1: response_relay_get_challenge — body is challenge value, not r
 
 describe('SRV-2: response_relay_post_json — POST response status and JSON body relayed correctly', () => {
   it('POST webhook returns correct status and JSON body', async () => {
-    const { base, connectFakeSocket, stop } = await setup();
-
+    const { base, control, stop } = await setup();
     const responseBody = JSON.stringify({ received: true });
 
-    await connectFakeSocket(() =>
+    control.prepareResponse(() =>
       `HTTP/1.1 200 OK\r\n` +
       `Content-Type: application/json\r\n` +
       `Content-Length: ${Buffer.byteLength(responseBody)}\r\n` +
@@ -170,13 +139,38 @@ describe('SRV-2: response_relay_post_json — POST response status and JSON body
   });
 });
 
+describe('SRV-3: response_relay_custom_headers — upstream response headers forwarded to client', () => {
+  it('custom upstream headers appear in the client response', async () => {
+    const { base, control, stop } = await setup();
+    const responseBody = 'ok';
+
+    control.prepareResponse(() =>
+      `HTTP/1.1 202 Accepted\r\n` +
+      `Content-Type: text/plain\r\n` +
+      `Content-Length: ${Buffer.byteLength(responseBody)}\r\n` +
+      `X-Custom-Header: hello-from-upstream\r\n` +
+      `\r\n` +
+      responseBody
+    );
+
+    const res = await fetch(`${base}/notify`, { method: 'POST', body: 'ping' });
+
+    assert.equal(res.status, 202, 'status 202 must be relayed');
+    assert.equal(res.headers.get('x-custom-header'), 'hello-from-upstream',
+      'custom upstream header must be forwarded');
+    const body = await res.text();
+    assert.equal(body, responseBody);
+
+    await stop();
+  });
+});
+
 describe('SRV-4: response_relay_keep_alive — response ends on Content-Length, not socket close', () => {
   it('completes the response even when the upstream keeps the socket open (n8n keep-alive)', async () => {
-    const { base, connectFakeSocket, stop } = await setup();
-
+    const { base, control, stop } = await setup();
     const body = 'keep-alive-challenge-42';
 
-    await connectFakeSocket(() => ({
+    control.prepareResponse(() => ({
       reply:
         `HTTP/1.1 200 OK\r\n` +
         `Content-Type: text/plain\r\n` +
@@ -204,14 +198,10 @@ describe('SRV-4: response_relay_keep_alive — response ends on Content-Length, 
 
 describe('SRV-5: response_relay_chunked — response ends on terminal 0-sized chunk', () => {
   it('completes the response on chunked transfer-encoding terminator even with keep-alive', async () => {
-    const { base, connectFakeSocket, stop } = await setup();
+    const { base, control, stop } = await setup();
+    const chunked = `5\r\nhello\r\n0\r\n\r\n`;
 
-    // Chunked body: "hello" (5 bytes) then terminator
-    const chunked =
-      `5\r\nhello\r\n` +
-      `0\r\n\r\n`;
-
-    await connectFakeSocket(() => ({
+    control.prepareResponse(() => ({
       reply:
         `HTTP/1.1 200 OK\r\n` +
         `Content-Type: text/plain\r\n` +
@@ -239,9 +229,9 @@ describe('SRV-5: response_relay_chunked — response ends on terminal 0-sized ch
 
 describe('SRV-6: response_relay_no_body — 204 ends immediately after headers', () => {
   it('completes immediately on no-body status even when socket stays open', async () => {
-    const { base, connectFakeSocket, stop } = await setup();
+    const { base, control, stop } = await setup();
 
-    await connectFakeSocket(() => ({
+    control.prepareResponse(() => ({
       reply:
         `HTTP/1.1 204 No Content\r\n` +
         `Connection: keep-alive\r\n` +
@@ -265,28 +255,20 @@ describe('SRV-6: response_relay_no_body — 204 ends immediately after headers',
 });
 
 describe('SRV-7: response_relay_get_delay — upstream has time to respond to GET even though req has no body', () => {
-  it('does not tear down the tunnel socket on req.close for no-body GET before upstream responds', async () => {
-    const { base, connectFakeSocket, stop } = await setup();
-
-    // WhatsApp-style webhook verification — upstream (n8n) takes a few hundred
-    // milliseconds to process and respond. The server must NOT close the
-    // tunnel socket in response to req.close firing on the no-body GET.
+  it('does not tear down the tunnel socket when upstream takes time to respond to a no-body GET', async () => {
+    const { base, control, stop } = await setup();
     const challenge = '128252226';
 
-    await connectFakeSocket(() => {
-      // Simulate upstream processing delay, then return the challenge.
-      const reply =
+    control.prepareResponse(() => ({
+      reply:
         `HTTP/1.1 200 OK\r\n` +
         `Content-Type: text/plain\r\n` +
         `Content-Length: ${Buffer.byteLength(challenge)}\r\n` +
         `Connection: keep-alive\r\n` +
         `\r\n` +
-        challenge;
-      // Return the reply asynchronously so server's req.close has a chance
-      // to fire before the upstream response lands.
-      setTimeout(() => {}, 0);
-      return { reply, keepAlive: true };
-    });
+        challenge,
+      keepAlive: true,
+    }));
 
     const res = await Promise.race([
       fetch(`${base}/webhook?hub.mode=subscribe&hub.challenge=${challenge}&hub.verify_token=x`),
@@ -298,7 +280,7 @@ describe('SRV-7: response_relay_get_delay — upstream has time to respond to GE
     assert.equal(res.status, 200);
     const body = await res.text();
     assert.equal(body, challenge,
-      `body must be the challenge, got ${JSON.stringify(body)} — if empty, req.close is tearing down the tunnel socket before upstream responds`);
+      `body must be the challenge, got ${JSON.stringify(body)}`);
 
     await stop();
   });
@@ -306,11 +288,10 @@ describe('SRV-7: response_relay_get_delay — upstream has time to respond to GE
 
 describe('SRV-8: response_relay_upstream_closed — 502 when tunnel socket closes without any response', () => {
   it('returns 502 Bad Gateway when the upstream tunnel closes without sending any bytes', async () => {
-    const { base, connectFakeSocket, stop } = await setup();
+    const { base, control, stop } = await setup();
 
-    // Simulate a zombie pool socket: connects, receives request, but closes
-    // without sending any response (e.g. the LB killed it right after delivery).
-    await connectFakeSocket(() => ({ close: true }));
+    // Socket closes immediately without writing any response bytes.
+    control.prepareResponse(() => ({ close: true }));
 
     const res = await Promise.race([
       fetch(`${base}/webhook`),
@@ -321,33 +302,6 @@ describe('SRV-8: response_relay_upstream_closed — 502 when tunnel socket close
 
     assert.equal(res.status, 502,
       `must reply 502 Bad Gateway, not 200 with empty body — got ${res.status}`);
-
-    await stop();
-  });
-});
-
-describe('SRV-3: response_relay_custom_headers — upstream response headers forwarded to client', () => {
-  it('custom upstream headers appear in the client response', async () => {
-    const { base, connectFakeSocket, stop } = await setup();
-
-    const responseBody = 'ok';
-
-    await connectFakeSocket(() =>
-      `HTTP/1.1 202 Accepted\r\n` +
-      `Content-Type: text/plain\r\n` +
-      `Content-Length: ${Buffer.byteLength(responseBody)}\r\n` +
-      `X-Custom-Header: hello-from-upstream\r\n` +
-      `\r\n` +
-      responseBody
-    );
-
-    const res = await fetch(`${base}/notify`, { method: 'POST', body: 'ping' });
-
-    assert.equal(res.status, 202, 'status 202 must be relayed');
-    assert.equal(res.headers.get('x-custom-header'), 'hello-from-upstream',
-      'custom upstream header must be forwarded');
-    const body = await res.text();
-    assert.equal(body, responseBody);
 
     await stop();
   });

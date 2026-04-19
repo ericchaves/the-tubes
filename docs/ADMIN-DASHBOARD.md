@@ -32,7 +32,7 @@ To open the dashboard directly in a browser, navigate to `https://user:<token>@<
 
 Displays:
 
-- **Active tunnels** — live list of all connected and disconnected-but-reserved expose sessions, with tunnel ID, connection state, creation time, port, and available socket count.
+- **Active tunnels** — live list of all connected and disconnected-but-reserved expose sessions, with tunnel ID, connection state, creation time, port, and number of active pairs.
 - **Server activity** — a rolling log of tunnel lifecycle, security, and server error events, updated in real time via SSE.
 - **Blocklist** — link to `/tubes/blocklist` for IP management.
 - **Server configuration** — all active settings except sensitive values (`hmacSecret`, `hmacSecretFile`, `adminToken`). Includes port, domain, reconnect window, max connections, HMAC status, rate limit settings, etc.
@@ -171,11 +171,27 @@ Every event has the shape:
 | Type | Fields | Meaning |
 |---|---|---|
 | `tunnel.created` | `port, maxConnections, reconnectWindowMs, sessionTokenPrefix` | expose session registered; TCP listener started |
-| `tunnel.connected` | `port, socketCount` | expose client connected (initial or after reconnect window) |
-| `tunnel.disconnected` | `reconnectWindowMs` | expose client dropped; reservation held for `reconnectWindowMs` ms |
-| `tunnel.reconnected` | `socketCount` | same session token reconnected within the window |
 | `tunnel.window_expired` | — | reconnect window elapsed; tunnel will be destroyed |
 | `tunnel.destroyed` | — | tunnel fully removed |
+
+### Control channel lifecycle
+
+| Type | Fields | Meaning |
+|---|---|---|
+| `control.connected` | `controlId, remoteAddr, keptPairs, droppedPairs` | expose client connected (initial); control WS established |
+| `control.resumed` | `controlId, previousControlId, remoteAddr, keptPairs, droppedPairs` | same session reconnected within the window; `keptPairs` inflight requests preserved |
+| `control.disconnected` | `controlId, reason, durationMs, inflightPairs` | control WS dropped; reconnect window started |
+| `control.heartbeat_timeout` | `controlId, lastPongAgoMs` | expose client stopped responding to pings |
+
+### Pair lifecycle (server-side)
+
+| Type | Fields | Meaning |
+|---|---|---|
+| `pair.requested` | `pairId, requestId, kind, method, path, remoteAddr` | `pair.open` sent to expose client; waiting for data socket |
+| `pair.opened` | `pairId, requestId` | data socket received and preamble matched; proxying started |
+| `pair.replaced` | `pairId, previousControlId` | WS reconnect: stale data socket replaced with new REPLACES socket |
+| `pair.local_refused` | `pairId, requestId, reason` | expose client sent `pair.failed`; local service unreachable |
+| `pair.closed` | `pairId, requestId, reason, bytesIn, bytesOut, durationMs` | expose client reported pair closed normally |
 
 ### Security events
 
@@ -210,24 +226,24 @@ These events have `tunnelId: '__global__'` and appear in the global stream at `/
 | Type | Fields | Meaning |
 |---|---|---|
 | `request.received` | `requestId, method, path, headers` | request arrived at public port (sensitive headers redacted) |
-| `request.waiting` | `requestId, method, path` | waiting for a tunnel socket (pool temporarily empty) |
-| `request.delivered` | `requestId, method, path, socketPoolRemaining` | socket obtained; forwarding started |
+| `request.delivered` | `requestId, method, path, pairId` | data socket matched; forwarding started |
 | `request.failed` | `requestId, method, path, reason, statusSent` | could not deliver — client gets 503 |
 | `response.complete` | `requestId, method, path, status, bytesIn, bytesOut, durationMs` | response fully sent to requester |
 | `response.aborted` | `requestId, method, path, reason, status, bytesIn, bytesOut, durationMs` | connection broken before response finished |
 
-`request.failed` reasons: `no_socket_available`, `null_socket`.  
+`request.failed` reasons: `no_control_channel` (expose not connected), `max_connections` (concurrent pair limit hit), `no_socket_available` (data socket not received within timeout).  
 `response.aborted` reasons: `client_disconnected`, `socket_error`, `response_error`, `request_aborted`.
 
 ### WebSocket upgrades
 
 | Type | Fields | Meaning |
 |---|---|---|
-| `ws.received` | `requestId, path` | upgrade request arrived at public port |
-| `ws.delivered` | `requestId, path, socketPoolRemaining` | tunnel socket obtained; proxying started |
-| `ws.failed` | `requestId, path, reason` | could not establish tunnel socket; 503 sent |
+| `ws.received` | `requestId, path, remoteAddr` | upgrade request arrived at public port |
+| `ws.delivered` | `requestId, path, pairId` | data socket matched; proxying started |
+| `ws.failed` | `requestId, path, reason` | could not establish pair; 503 sent |
 | `ws.closed` | `requestId, path, reason, bytesIn, bytesOut, durationMs` | WebSocket session ended |
 
+`ws.failed` reasons: `no_control_channel`, `max_connections`, `no_socket_available`.  
 `ws.closed` reasons: `socket_closed`, `client_closed`, `socket_error`, `client_error`.
 
 ### Client-side events (expose client dashboard)
@@ -258,19 +274,25 @@ These events appear in the client dashboard activity log.
 ### Request arrived but expose client was offline
 
 ```
-request.received  → request.failed  (reason: no_socket_available, statusSent: 503)
+request.received  → request.failed  (reason: no_control_channel, statusSent: 503)
 ```
 
 ### Request delivered successfully
 
 ```
-request.received  → request.delivered  → response.complete  (status: 200, durationMs: 45)
+request.received  → pair.requested  → pair.opened  → request.delivered  → response.complete  (status: 200, durationMs: 45)
+```
+
+### Local service was unreachable (ECONNREFUSED)
+
+```
+request.received  → pair.requested  → pair.local_refused  → request.failed  (statusSent: 503)
 ```
 
 ### Expose client did not reconnect — tunnel removed
 
 ```
-tunnel.disconnected  (reconnectWindowMs: 30000)
+control.disconnected  (reason: ws_closed, inflightPairs: [])
 tunnel.window_expired
 tunnel.destroyed
 ```

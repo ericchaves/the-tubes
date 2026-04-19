@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { handleAdminRequest } from './router.js';
+import { tryHandleControlUpgrade } from './control-upgrade.js';
 import { createDebug } from '../debug.js';
 
 const debug = createDebug('server:api');
@@ -20,6 +21,12 @@ export function createApiServer({ manager, hmacVerify, config, startedAt, global
   const server = createServer((req, res) => {
     debug('%s %s', req.method, req.url);
     handleAdminRequest(req, res, services);
+  });
+
+  server.on('upgrade', (req, socket, head) => {
+    if (tryHandleControlUpgrade({ req, socket, manager, config, hmacVerify, globalLog })) return;
+    socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+    socket.destroy();
   });
 
   return server;

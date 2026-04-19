@@ -8,13 +8,13 @@ the tubes is a single Node.js CLI (`the tubes`) with three subcommands:
 - `expose` — exposes a local port through a running server
 - `replay` — replays captured HTTP requests against a target
 
-Zero runtime dependencies. All networking uses `node:http`, `node:net`, `node:tls`.
+Zero runtime dependencies. All networking uses `node:http`, `node:net`, `node:tls`, `node:http2` (for WebSocket upgrade handling via raw TCP).
 
 ## Layer Diagram
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  bin/tt.js   ← entry, dispatch by command │
+│  bin/tt.js   ← entry, dispatch by command        │
 └────────────┬─────────────────┬───────────────────┘
              │                 │
      ┌───────▼──────┐  ┌───────▼──────┐  ┌───────────────┐
@@ -29,6 +29,7 @@ Zero runtime dependencies. All networking uses `node:http`, `node:net`, `node:tl
     │               │                  │
     │          ┌────┴─────────────┐    │
     │          │  common/         │    │
+    │          │  control-protocol.js  │
     │          │  hmac.js         │    │
     │          │  nonce-cache.js  │    │
     │          │  id-generator.js │    │
@@ -44,6 +45,7 @@ Zero runtime dependencies. All networking uses `node:http`, `node:net`, `node:tl
 │  tunnel-manager.js    │   │  manifest.js         │
 │  tunnel.js            │   │  runner.js           │
 │  tunnel-agent.js      │   └─────────────────────┘
+│  control-channel.js   │
 │  router.js            │
 │  hmac-middleware.js   │
 │  api-server.js        │
@@ -53,6 +55,7 @@ Zero runtime dependencies. All networking uses `node:http`, `node:net`, `node:tl
 │  client/                 │
 │  tunnel.js (controller)  │
 │  tunnel-cluster.js       │
+│  control-channel.js      │
 │  failure-tracker.js      │
 │  reconnect-policy.js     │
 │  header-host-transformer │
@@ -72,13 +75,21 @@ Internet user
 │ routes by subdomain        │
 └────┬───────────────────────┘
      │
-     ▼ GET socket
+     ▼ forward to tunnel
 ┌────────────────────────────┐
 │ ServerTunnel               │  one per expose session
-│ ├── TunnelAgent            │  TCP server, socket pool
-│ │    └── socket pool       │  raw sockets from expose
+│ ├── ControlSession         │  WS at /api/tunnels/:id/control
+│ ├── TunnelAgent            │  TCP server for data sockets
 │ └── reconnect window timer │
 └────────────────────────────┘
+
+Request flow (on-demand model):
+  1. HTTP/WS request arrives at public server
+  2. ServerTunnel sends pair.open on control channel
+  3. Expose client connects to TunnelAgent TCP port
+  4. Client writes preamble: TT/1 PAIR <pairId>\r\n
+  5. TunnelAgent matches preamble → resolves pending reservation
+  6. ServerTunnel pipes external ↔ data socket bidirectionally
 
 ┌────────────────────────────┐
 │ TunnelManager              │
@@ -92,6 +103,7 @@ Internet user
 │ handleAdminRequest         │
 │ POST /api/tunnels[/:id]    │
 │ GET  /api/tunnels/:id      │
+│ GET  /api/tunnels/:id/control  (WS upgrade)
 │ GET  /api/status           │
 │ GET  /healthz              │
 └────────────────────────────┘
@@ -107,22 +119,34 @@ expose process
 │ ClientTunnel               │ owns singletons
 │ ├── FailureTracker         │ sliding window + total
 │ ├── ReconnectPolicy        │ exponential backoff
-│ └── TunnelCluster          │ manages socket pairs
+│ ├── ControlChannel         │ WS control channel
+│ └── TunnelCluster          │ manages on-demand pairs
 └────────┬───────────────────┘
          │
-         ▼ openOne() × maxConnections
+         ▼ one pair per server pair.open message
 ┌────────────────────────────┐
-│ SocketPair                 │  one per connection
-│ ├── remote (net.Socket)    │  → tunnel server TCP port
-│ └── local  (net.Socket)    │  → local service
+│ on-demand pair             │  created only when needed
+│ ├── data (net.Socket)      │  → tunnel server TCP port
+│ │    preamble: TT/1 PAIR   │
+│ └── local (net.Socket)     │  → local service
 │     with HeaderHostTransformer
 └────────────────────────────┘
 
-Reconnect loop (R1–R10):
+Pair lifecycle:
+  control ← pair.open  → TunnelCluster._openPair()
+    connect local service first (ECONNREFUSED → pair.failed)
+    connect data socket, write preamble
+    pipe bidirectionally
+    on close → pair.closed (with stats)
+
+Failure tracking:
   tunnel:dead → ClientTunnel.on('tunnel:dead')
-    if (!retriable) → exit or skip
-    if (failureTracker.shouldGiveUp()) → emit('exit')
-    else → setTimeout(openOne, policy.nextDelay())
+    if (failureTracker.shouldGiveUp()) → emit('exit', 'reconnect_loop_detected')
+
+Control reconnect (R1–R6):
+  ControlChannel WS drops → built-in exponential backoff reconnect
+  On reconnect → hello(resumeControlId, inflightPairs[])
+  Server replies hello.ack → keep[] pairs reattached, drop[] pairs torn down
 ```
 
 ## Capture & Replay
@@ -143,11 +167,12 @@ fetch(target, { method, headers, body }) → HTTP response
 
 ## Protocol (`the-tubes/1.0`)
 
-All expose sessions must send `X-TT-Session-Token`. If the server has HMAC enabled, `X-TT-Auth` is also required. See [PROTOCOL.md](./PROTOCOL.md) for the full spec.
+All expose sessions must send `X-TT-Session-Token`. If the server has HMAC enabled, `X-TT-Auth` is also required. After tunnel creation, the expose client maintains a persistent WebSocket control channel through which the server sends `pair.open` instructions. Each data socket is opened on demand with a `TT/1 PAIR <pairId>` preamble. See [PROTOCOL.md](./PROTOCOL.md) for the full spec.
 
 ## Design Principles
 
+- **On-demand pairs** — data sockets are opened only when the server has a real request waiting. No pre-opened pool.
 - **Composition over inheritance** — only `TunnelAgent` inherits from `http.Agent`. All others use composition + `EventEmitter`.
-- **Single reconnect decision point** — only `ClientTunnel` calls `openOne()`. `TunnelCluster` emits `tunnel:dead` and stops.
+- **Single reconnect decision point** — only `ClientTunnel` calls reconnect logic. `TunnelCluster` emits `tunnel:dead` and stops.
 - **Session-token-only identity** — no IP-based identity. Every tunnel has a reconnect window, keyed by `sessionToken`.
 - **Zero runtime dependencies** — all I/O via Node.js built-ins.

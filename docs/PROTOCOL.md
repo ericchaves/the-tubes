@@ -49,7 +49,7 @@ The server verifies:
 }
 ```
 
-After receiving this, the expose process opens `maxConnections` raw TCP connections to `tunnelHost:tunnelPort`. These raw sockets are held in the server's socket pool and used to forward HTTP/WS traffic.
+After receiving this, the expose process opens a WebSocket control channel (see below) and waits for the server to instruct it to open data sockets on demand.
 
 ### Error Responses
 
@@ -61,21 +61,84 @@ After receiving this, the expose process opens `maxConnections` raw TCP connecti
 | 409 | Subdomain reserved by a different session (within reconnect window) |
 | 503 | No ports available in range |
 
+---
+
+## WebSocket Control Channel
+
+After tunnel creation, the expose process opens a persistent WebSocket connection:
+
+```
+GET /api/tunnels/:id/control
+Upgrade: websocket
+X-TT-Session-Token: <token>
+```
+
+This channel carries all pair lifecycle messages for the duration of the session.
+
+### Message format
+
+All messages are JSON frames:
+
+```json
+{ "type": "<type>", ...fields }
+```
+
+### Server → Client messages
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `hello.ack` | `tunnelId, keep[], drop[]` | Sent after the client's `hello`. `keep` lists inflight pairs to reattach; `drop` lists pairs to abandon. |
+| `pair.open` | `pairId, requestId, kind, method, path, remoteAddr` | Instructs the client to open a data socket for a pending request. |
+| `pair.close` | `pairId, reason` | Server is closing the pair (e.g. request timeout, tunnel destroyed). |
+| `ping` | — | Heartbeat; client must respond with `pong`. |
+
+### Client → Server messages
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| `hello` | `controlId, resumeControlId?, inflightPairs[]` | Sent once on connect. `resumeControlId` identifies the previous session during a reconnect. |
+| `pair.failed` | `pairId, reason` | Local service refused or failed to connect. Server returns 502/503 to the external client. |
+| `pair.closed` | `pairId, reason, bytesIn, bytesOut, durationMs` | Pair completed normally. Used for accounting and dashboard events. |
+| `pong` | — | Heartbeat response. |
+
+---
+
+## Data Socket
+
+For each `pair.open` received, the expose client:
+
+1. Connects to `tunnelHost:tunnelPort` (raw TCP, `allowHalfOpen: true`).
+2. Writes the preamble as the first bytes: `TT/1 PAIR <pairId>\r\n`
+   - During WS reconnect: `TT/1 PAIR <pairId> REPLACES <previousControlId>\r\n`
+3. The server matches the preamble to the pending request and begins bidirectional proxying.
+
+If the local service is unreachable (`ECONNREFUSED`), the client sends `pair.failed` instead of opening a data socket.
+
+`maxConnections` limits the number of concurrent pairs. The server rejects new `pair.open` requests with `EMAXCONN` once this limit is reached.
+
+---
+
 ## Public Tunnel Proxy Responses
 
-When a request arrives on the public server and is routed to an active tunnel, the server may return these responses directly (not from the local service):
+When a request arrives on the public server for an active tunnel, the server may return these responses directly:
 
 | Status | Condition | Notable Headers |
 |--------|-----------|-----------------|
-| 429 | Tunnel connection pool exhausted — all sockets are in use and the wait timeout expired | `X-TT-Max-Connections`, `X-TT-Current-Connections`, `X-TT-Available-Connections`, `X-TT-Waiting-Requests` |
-| 503 | No tunnel socket became available within the wait timeout | `Retry-After` |
+| 503 | Expose client not connected (no control channel) | `Retry-After` |
+| 503 | Max concurrent pairs reached | `Retry-After` |
+| 503 | Data socket not received within timeout | `Retry-After` |
+| 429 | IP rate-limited (too many requests to unknown tunnels) | — |
 | 404 | No active tunnel for the requested subdomain | — |
 
 These responses include `X-TT-Source: server` and `X-TT-Proto: the-tubes/1.0`. Expose clients skip capturing them.
 
+---
+
 ## Reconnect Window
 
-When the expose process disconnects, the server holds the tunnel reservation for `reconnectWindowMs`. If the same `sessionToken` reconnects within that window, it reclaims the same `tunnelId`. A different token gets a 409.
+When the expose process disconnects, the server holds the tunnel reservation for `reconnectWindowMs`. If the same `sessionToken` reconnects within that window, it reclaims the same `tunnelId`. Inflight pairs with active external connections are preserved and reattached via `hello.ack keep[]`. A different token gets a 409.
+
+---
 
 ## Other Endpoints
 
@@ -92,7 +155,7 @@ When the expose process disconnects, the server holds the tunnel reservation for
   "protocol": "the-tubes/1.0",
   "uptime": 42,
   "tunnels": [
-    { "tunnelId": "fast-whale", "connected": true, "port": 10042, "createdAt": "...", "availableConnections": 8 }
+    { "tunnelId": "fast-whale", "connected": true, "port": 10042, "createdAt": "...", "pairsActive": 2 }
   ]
 }
 ```
@@ -101,9 +164,13 @@ When the expose process disconnects, the server holds the tunnel reservation for
 
 Returns the same shape as the tunnel creation response (current state).
 
+---
+
 ## Response Headers
 
 All responses include `X-TT-Proto: the-tubes/1.0`. Server-generated error responses (503, 404 for unknown tunnels) also include `X-TT-Source: server` — the expose client skips capturing these.
+
+---
 
 ## curl Examples
 

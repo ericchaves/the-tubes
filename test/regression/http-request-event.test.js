@@ -19,6 +19,11 @@
  *   HTTP-EV-4  No length hint (HTTP/1.0) → falls back to socket close
  *   HTTP-EV-5  No double emission when socket closes after early emit
  *   HTTP-EV-6  SSE stream (long-lived)  → no premature emit; fires on close
+ *
+ * Architecture note: pairs are created on-demand when the server sends
+ * pair.open on the control channel.  Tests use MockControlChannel to trigger
+ * pair creation and a "data server" that reads the TT/1 PAIR preamble before
+ * writing the HTTP request bytes.
  */
 
 import { describe, it } from 'node:test';
@@ -27,6 +32,7 @@ import { createServer as createTcpServer } from 'node:net';
 import { FailureTracker } from '../../src/client/failure-tracker.js';
 import { ReconnectPolicy } from '../../src/client/reconnect-policy.js';
 import { TunnelCluster } from '../../src/client/tunnel-cluster.js';
+import { MockControlChannel } from '../helpers/mock-control.js';
 
 // ─── HTTP message helpers ─────────────────────────────────────────────────────
 
@@ -44,13 +50,6 @@ const HTTP_GET_REQUEST =
   'Accept: text/event-stream\r\n' +
   '\r\n';
 
-/**
- * Build a minimal HTTP/1.1 response string.
- * @param {number} status
- * @param {string} statusText
- * @param {string} [extraHeaders]  Each header must include its trailing \r\n.
- * @param {string} [body]
- */
 function httpResponse(status, statusText, extraHeaders = '', body = '') {
   return `HTTP/1.1 ${status} ${statusText}\r\n${extraHeaders}\r\n${body}`;
 }
@@ -58,6 +57,7 @@ function httpResponse(status, statusText, extraHeaders = '', body = '') {
 // ─── Test infrastructure ──────────────────────────────────────────────────────
 
 function makeCluster(tunnelPort, localPort) {
+  const control = new MockControlChannel();
   const info = {
     tunnelId: 'http-ev-test',
     tunnelHost: '127.0.0.1',
@@ -75,7 +75,7 @@ function makeCluster(tunnelPort, localPort) {
   };
   const tracker = new FailureTracker({ windowS: 60, maxInWindow: 20, maxTotal: 100 });
   const policy  = new ReconnectPolicy({ initialDelayMs: 10, maxDelayMs: 100 });
-  return new TunnelCluster(info, config, tracker, policy);
+  return { cluster: new TunnelCluster(info, config, tracker, policy, control), control };
 }
 
 /** TCP server that tracks accepted sockets so teardown never hangs. */
@@ -91,6 +91,24 @@ function createTrackedServer(handler) {
   return server;
 }
 
+/**
+ * Data server that reads the TT/1 PAIR preamble then invokes handler(sock).
+ * Must consume the preamble before the test's HTTP request is written so that
+ * the server-side socket is not seen to contain preamble bytes mid-stream.
+ */
+function createDataServer(handler) {
+  return createTrackedServer(sock => {
+    let buf = Buffer.alloc(0);
+    const onData = chunk => {
+      buf = Buffer.concat([buf, chunk]);
+      if (buf.indexOf('\n') === -1) return;
+      sock.removeListener('data', onData);
+      handler(sock);
+    };
+    sock.on('data', onData);
+  });
+}
+
 function listen(server) {
   return new Promise(r => server.listen(0, '127.0.0.1', r));
 }
@@ -102,9 +120,6 @@ function stopTracked(server) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-/**
- * Resolve with the first 'request' event from cluster, or reject after timeoutMs.
- */
 function awaitRequest(cluster, timeoutMs = 2000) {
   return new Promise((resolve, reject) => {
     const t = setTimeout(
@@ -119,24 +134,23 @@ function awaitRequest(cluster, timeoutMs = 2000) {
 
 describe('HTTP-EV-1: request_event_content_length — emits before socket close on Content-Length response', () => {
   it('emits request immediately when Content-Length body is fully received, socket still open', async () => {
-    // Local service: write response only after the request arrives, then keep
-    // the socket open (simulates HTTP keep-alive — this was the original bug).
     const localServer = createTrackedServer(sock => {
       sock.once('data', () => {
         sock.write(httpResponse(200, 'OK', 'Content-Length: 5\r\n', 'hello'));
-        // Intentionally do NOT close sock — simulates HTTP keep-alive.
+        // Keep open — simulates HTTP keep-alive (the original bug trigger).
       });
     });
     await listen(localServer);
 
-    const tunnelServer = createTrackedServer(sock => {
+    // Data server reads preamble, then writes the HTTP request to the cluster.
+    const dataServer = createDataServer(sock => {
       sock.write(HTTP_POST_REQUEST);
     });
-    await listen(tunnelServer);
+    await listen(dataServer);
 
-    const cluster = makeCluster(tunnelServer.address().port, localServer.address().port);
+    const { cluster, control } = makeCluster(dataServer.address().port, localServer.address().port);
     const reqP = awaitRequest(cluster);
-    cluster.openOne().catch(() => {});
+    control.openPair({ method: 'POST', path: '/webhook' });
 
     const ev = await reqP;
     assert.equal(ev.method, 'POST');
@@ -145,7 +159,7 @@ describe('HTTP-EV-1: request_event_content_length — emits before socket close 
 
     cluster.close();
     await stopTracked(localServer);
-    await stopTracked(tunnelServer);
+    await stopTracked(dataServer);
   });
 });
 
@@ -153,24 +167,22 @@ describe('HTTP-EV-1: request_event_content_length — emits before socket close 
 
 describe('HTTP-EV-2: request_event_chunked — emits on chunked terminal chunk, socket still open', () => {
   it('emits request when \\r\\n0\\r\\n\\r\\n terminator arrives, connection still open', async () => {
-    // Chunked body: one 5-byte chunk + terminal chunk.
     const chunkedBody = '5\r\nhello\r\n0\r\n\r\n';
     const localServer = createTrackedServer(sock => {
       sock.once('data', () => {
         sock.write(httpResponse(200, 'OK', 'Transfer-Encoding: chunked\r\n', chunkedBody));
-        // Keep socket open — early detection must fire regardless.
       });
     });
     await listen(localServer);
 
-    const tunnelServer = createTrackedServer(sock => {
+    const dataServer = createDataServer(sock => {
       sock.write(HTTP_POST_REQUEST);
     });
-    await listen(tunnelServer);
+    await listen(dataServer);
 
-    const cluster = makeCluster(tunnelServer.address().port, localServer.address().port);
+    const { cluster, control } = makeCluster(dataServer.address().port, localServer.address().port);
     const reqP = awaitRequest(cluster);
-    cluster.openOne().catch(() => {});
+    control.openPair({ method: 'POST', path: '/webhook' });
 
     const ev = await reqP;
     assert.equal(ev.method, 'POST');
@@ -179,7 +191,7 @@ describe('HTTP-EV-2: request_event_chunked — emits on chunked terminal chunk, 
 
     cluster.close();
     await stopTracked(localServer);
-    await stopTracked(tunnelServer);
+    await stopTracked(dataServer);
   });
 });
 
@@ -190,19 +202,16 @@ describe('HTTP-EV-3: request_event_no_body_status — emits immediately after he
     const localServer = createTrackedServer(sock => {
       sock.once('data', () => {
         sock.write(httpResponse(204, 'No Content'));
-        // Keep socket open.
       });
     });
     await listen(localServer);
 
-    const tunnelServer = createTrackedServer(sock => {
-      sock.write(HTTP_POST_REQUEST);
-    });
-    await listen(tunnelServer);
+    const dataServer = createDataServer(sock => { sock.write(HTTP_POST_REQUEST); });
+    await listen(dataServer);
 
-    const cluster = makeCluster(tunnelServer.address().port, localServer.address().port);
+    const { cluster, control } = makeCluster(dataServer.address().port, localServer.address().port);
     const reqP = awaitRequest(cluster);
-    cluster.openOne().catch(() => {});
+    control.openPair({ method: 'POST', path: '/webhook' });
 
     const ev = await reqP;
     assert.equal(ev.method, 'POST');
@@ -211,7 +220,7 @@ describe('HTTP-EV-3: request_event_no_body_status — emits immediately after he
 
     cluster.close();
     await stopTracked(localServer);
-    await stopTracked(tunnelServer);
+    await stopTracked(dataServer);
   });
 
   it('emits request on 304 Not Modified as soon as headers arrive, socket still open', async () => {
@@ -222,21 +231,19 @@ describe('HTTP-EV-3: request_event_no_body_status — emits immediately after he
     });
     await listen(localServer);
 
-    const tunnelServer = createTrackedServer(sock => {
-      sock.write(HTTP_POST_REQUEST);
-    });
-    await listen(tunnelServer);
+    const dataServer = createDataServer(sock => { sock.write(HTTP_POST_REQUEST); });
+    await listen(dataServer);
 
-    const cluster = makeCluster(tunnelServer.address().port, localServer.address().port);
+    const { cluster, control } = makeCluster(dataServer.address().port, localServer.address().port);
     const reqP = awaitRequest(cluster);
-    cluster.openOne().catch(() => {});
+    control.openPair({ method: 'POST', path: '/webhook' });
 
     const ev = await reqP;
     assert.equal(ev.status, 304);
 
     cluster.close();
     await stopTracked(localServer);
-    await stopTracked(tunnelServer);
+    await stopTracked(dataServer);
   });
 });
 
@@ -244,34 +251,30 @@ describe('HTTP-EV-3: request_event_no_body_status — emits immediately after he
 
 describe('HTTP-EV-4: request_event_fallback — falls back to local.once("close") when no length hint', () => {
   it('emits request when socket closes for HTTP/1.0-style response with no Content-Length', async () => {
-    // No Content-Length + not chunked — tryEmitResponseComplete() cannot detect
-    // completion, so the event must fall back to local.once('close').
-    // The close is triggered by destroying the tunnel-server socket: remote.once('close')
-    // → pair.local.destroy() → local.once('close') → emitHttpRequest().
     const localServer = createTrackedServer(sock => {
       sock.once('data', () => {
         sock.write(httpResponse(200, 'OK', '', 'response body'));
-        // Keep socket open — no close here.  Fallback fires only on full connection teardown.
+        // Keep open — fallback fires only on full connection teardown.
       });
     });
     await listen(localServer);
 
-    const tunnelServer = createTrackedServer(sock => {
+    const dataServer = createDataServer(sock => {
       sock.write(HTTP_POST_REQUEST);
-      // Keep open — we destroy manually after the response has propagated.
+      // Keep open — destroyed manually after the response has propagated.
     });
-    await listen(tunnelServer);
+    await listen(dataServer);
 
-    const cluster = makeCluster(tunnelServer.address().port, localServer.address().port);
-    cluster.openOne().catch(() => {});
+    const { cluster, control } = makeCluster(dataServer.address().port, localServer.address().port);
+    control.openPair({ method: 'POST', path: '/webhook' });
 
-    // Give the request/response cycle time to complete so resBufs is populated.
-    await sleep(30);
+    // Give request/response cycle time to complete so resBufs is populated.
+    await sleep(50);
 
-    // Trigger close chain from the tunnel side: RST → remote.once('close')
-    // → pair.local.destroy() → local.once('close') → emitHttpRequest() (fallback).
+    // Trigger close chain: destroy data socket → data.close → local.destroy
+    // → local.close → emitHttpRequest() fallback.
     const reqP = awaitRequest(cluster);
-    for (const s of tunnelServer._trackedSockets) s.destroy();
+    for (const s of dataServer._trackedSockets) s.destroy();
 
     const ev = await reqP;
     assert.equal(ev.method, 'POST');
@@ -280,7 +283,7 @@ describe('HTTP-EV-4: request_event_fallback — falls back to local.once("close"
 
     cluster.close();
     await stopTracked(localServer);
-    await stopTracked(tunnelServer);
+    await stopTracked(dataServer);
   });
 });
 
@@ -291,37 +294,32 @@ describe('HTTP-EV-5: request_event_no_double_emit — exactly one request event 
     const localServer = createTrackedServer(sock => {
       sock.once('data', () => {
         sock.write(httpResponse(200, 'OK', 'Content-Length: 5\r\n', 'hello'));
-        // Close shortly after — both the early path and the close path could
-        // potentially trigger.  The requestEmitted guard must prevent the second.
         setTimeout(() => sock.destroy(), 40);
       });
     });
     await listen(localServer);
 
-    const tunnelServer = createTrackedServer(sock => {
-      sock.write(HTTP_POST_REQUEST);
-    });
-    await listen(tunnelServer);
+    const dataServer = createDataServer(sock => { sock.write(HTTP_POST_REQUEST); });
+    await listen(dataServer);
 
-    const cluster = makeCluster(tunnelServer.address().port, localServer.address().port);
+    const { cluster, control } = makeCluster(dataServer.address().port, localServer.address().port);
 
     let count = 0;
     const firstP = new Promise(resolve => {
       cluster.on('request', ev => { count++; resolve(ev); });
     });
-    cluster.openOne().catch(() => {});
+    control.openPair({ method: 'POST', path: '/webhook' });
 
     const ev = await firstP;
     assert.equal(ev.method, 'POST');
     assert.equal(ev.status, 200);
 
-    // Wait for the socket close so any spurious second emission would have arrived.
     await sleep(80);
     assert.equal(count, 1, 'requestEmitted guard must prevent a second request event');
 
     cluster.close();
     await stopTracked(localServer);
-    await stopTracked(tunnelServer);
+    await stopTracked(dataServer);
   });
 });
 
@@ -329,9 +327,6 @@ describe('HTTP-EV-5: request_event_no_double_emit — exactly one request event 
 
 describe('HTTP-EV-6: request_event_sse_no_premature_emit — SSE stream must not trigger early emit', () => {
   it('does not emit request while SSE connection is open; emits exactly once after close', async () => {
-    // Local service: SSE server with no Content-Length and no chunked encoding.
-    // The connection is intentionally kept open while events are streamed,
-    // confirming that none of the early-detection paths fire for SSE.
     const localServer = createTrackedServer(sock => {
       sock.once('data', () => {
         sock.write(
@@ -340,34 +335,27 @@ describe('HTTP-EV-6: request_event_sse_no_premature_emit — SSE stream must not
           'Cache-Control: no-cache\r\n' +
           '\r\n',
         );
-        // Stream a few events while the connection stays open.
         setTimeout(() => sock.write('data: {"seq":1}\n\n'), 10);
         setTimeout(() => sock.write('data: {"seq":2}\n\n'), 20);
-        // Do NOT close — the socket must stay open for the duration of the test.
       });
     });
     await listen(localServer);
 
-    const tunnelServer = createTrackedServer(sock => {
-      sock.write(HTTP_GET_REQUEST);
-    });
-    await listen(tunnelServer);
+    const dataServer = createDataServer(sock => { sock.write(HTTP_GET_REQUEST); });
+    await listen(dataServer);
 
-    const cluster = makeCluster(tunnelServer.address().port, localServer.address().port);
+    const { cluster, control } = makeCluster(dataServer.address().port, localServer.address().port);
 
     let eventCount = 0;
     cluster.on('request', () => { eventCount++; });
-    cluster.openOne().catch(() => {});
+    control.openPair({ method: 'GET', path: '/events' });
 
-    // Wait past the SSE event stream — no request event must have fired yet.
     await sleep(60);
     assert.equal(eventCount, 0,
-      'request event must not fire while SSE connection is open (no Content-Length / not chunked)');
+      'request event must not fire while SSE connection is open');
 
-    // Simulate the external caller disconnecting by closing the tunnel-server
-    // socket (this is how remote-side close propagates to local in production).
     const reqP = awaitRequest(cluster);
-    for (const s of tunnelServer._trackedSockets) s.destroy();
+    for (const s of dataServer._trackedSockets) s.destroy();
 
     const ev = await reqP;
     assert.equal(eventCount, 1, 'exactly one request event must fire after SSE connection closes');
@@ -377,6 +365,6 @@ describe('HTTP-EV-6: request_event_sse_no_premature_emit — SSE stream must not
 
     cluster.close();
     await stopTracked(localServer);
-    await stopTracked(tunnelServer);
+    await stopTracked(dataServer);
   });
 });
