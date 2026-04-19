@@ -89,6 +89,7 @@ button.danger:hover{border-color:var(--red);color:var(--red)}
 .input-row input:focus{border-color:var(--blue)}
 .empty{color:var(--dim);padding:20px;text-align:center;font-size:13px}
 .section-actions{display:flex;gap:4px;margin-left:auto}
+section h2 .section-actions+.toggle{margin-left:4px}
 `;
 
 // All client-side logic is in a single IIFE. No external data is passed via

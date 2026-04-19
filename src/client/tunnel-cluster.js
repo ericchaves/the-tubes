@@ -144,7 +144,66 @@ export class TunnelCluster extends EventEmitter {
       ? (config.captureMaxBodyKb ?? 1024) * 1024 + 8192
       : 4096;
     const reqBufs = [], resBufs = [];
-    let reqTotal = 0, resTotal = 0;
+    let reqTotal = 0, resTotal = 0, resRawTotal = 0;
+
+    // State for HTTP response early-completion detection
+    let requestEmitted = false;
+    let resHeaderEnd = -1;
+    let resContentLength = -1;
+    let resIsChunked = false;
+    let resNoBody = false;
+
+    // Emit HTTP request event (once) and optional inspector capture.
+    // Called early when response complete is detected, or as fallback from local.once('close').
+    const emitHttpRequest = () => {
+      if (requestEmitted) return;
+      const reqMsg = _parseHttpMsg(Buffer.concat(reqBufs));
+      if (!reqMsg) return;
+      requestEmitted = true;
+      const parts = reqMsg.firstLine.split(' ');
+      const method = parts[0];
+      const path = parts[1];
+      const resBuf = Buffer.concat(resBufs);
+      const resMsg = _parseHttpMsg(resBuf);
+      const status = resMsg ? parseInt(resMsg.firstLine.split(' ')[1], 10) : null;
+      this.emit('request', { method, path, status });
+      if (this._inspector && method && path) {
+        const captureId = this._inspector.captureRequest({ method, path, headers: reqMsg.headers, body: reqMsg.body });
+        if (resMsg) {
+          this._inspector.captureResponse({ status, headers: resMsg.headers, body: resMsg.body }, captureId);
+        }
+        this.emit('capture', { captureId, file: `${info.tunnelId}.${captureId}.req.yaml`, method, path });
+      }
+    };
+
+    // Try to detect HTTP response completion before socket close.
+    // Covers: Content-Length, Transfer-Encoding: chunked, and no-body status codes (1xx/204/304).
+    // Falls back to socket close for HTTP/1.0 or Connection: close responses.
+    const tryEmitResponseComplete = () => {
+      if (requestEmitted || resBufs.length === 0) return;
+      if (resHeaderEnd === -1) {
+        const resBuf = Buffer.concat(resBufs);
+        resHeaderEnd = resBuf.indexOf('\r\n\r\n');
+        if (resHeaderEnd === -1) return;
+        const resMsg = _parseHttpMsg(resBuf);
+        if (!resMsg) return;
+        const statusCode = parseInt(resMsg.firstLine.split(' ')[1], 10);
+        if ((statusCode >= 100 && statusCode < 200) || statusCode === 204 || statusCode === 304) {
+          resNoBody = true;
+        } else {
+          const cl = resMsg.headers['content-length'];
+          const te = resMsg.headers['transfer-encoding'];
+          resContentLength = cl !== undefined ? parseInt(cl, 10) : -1;
+          resIsChunked = !!(te?.toLowerCase().includes('chunked'));
+        }
+      }
+      if (resNoBody) { emitHttpRequest(); return; }
+      if (resContentLength >= 0) {
+        if (resRawTotal - (resHeaderEnd + 4) >= resContentLength) emitHttpRequest();
+      } else if (resIsChunked) {
+        if (Buffer.concat(resBufs).indexOf(Buffer.from('\r\n0\r\n\r\n')) !== -1) emitHttpRequest();
+      }
+    };
 
     local.once('error', (err) => {
       localErrorHandled = true;
@@ -188,7 +247,9 @@ export class TunnelCluster extends EventEmitter {
       });
       local.on('data', chunk => {
         bytesTransferred += chunk.length;
+        resRawTotal += chunk.length;
         if (resTotal < maxCollect) { resBufs.push(chunk); resTotal += chunk.length; }
+        tryEmitResponseComplete();
       });
 
       // WebSocket capture: fire when remote receives EOF (server gracefully closed its side).
@@ -238,9 +299,7 @@ export class TunnelCluster extends EventEmitter {
       // Emit request event (always) and capture (when inspector configured).
       const reqMsg = _parseHttpMsg(Buffer.concat(reqBufs));
       if (reqMsg) {
-        const parts = reqMsg.firstLine.split(' ');
-        const method = parts[0];
-        const path = parts[1];
+        const path = reqMsg.firstLine.split(' ')[1];
         const isWebSocket = reqMsg.headers['upgrade']?.toLowerCase() === 'websocket';
 
         if (isWebSocket) {
@@ -265,27 +324,7 @@ export class TunnelCluster extends EventEmitter {
             });
           }
         } else {
-          const resMsg = _parseHttpMsg(Buffer.concat(resBufs));
-          const status = resMsg ? parseInt(resMsg.firstLine.split(' ')[1], 10) : null;
-
-          this.emit('request', { method, path, status });
-
-          if (this._inspector && method && path) {
-            const captureId = this._inspector.captureRequest({
-              method, path, headers: reqMsg.headers, body: reqMsg.body,
-            });
-            if (resMsg) {
-              this._inspector.captureResponse({
-                status, headers: resMsg.headers, body: resMsg.body,
-              }, captureId);
-            }
-            this.emit('capture', {
-              captureId,
-              file: `${info.tunnelId}.${captureId}.req.yaml`,
-              method,
-              path,
-            });
-          }
+          emitHttpRequest();
         }
       }
 
