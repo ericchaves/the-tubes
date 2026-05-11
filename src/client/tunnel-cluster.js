@@ -98,7 +98,8 @@ export class TunnelCluster extends EventEmitter {
       // against the failure budget (same rule as the legacy model).
       if (err.code !== 'ECONNREFUSED') this.failureTracker.record('localConnect');
       this._reportFailure(pairId, err.code || err.message);
-      this.emit('tunnel:dead', { pairId, reason: err.code || err.message, kind: 'localConnect', retriable: true });
+      const retriable = this.config.reconnectLocal !== false;
+      this.emit('tunnel:dead', { pairId, reason: err.code || err.message, kind: 'localConnect', retriable });
       this.pairs.delete(pairId);
     });
 

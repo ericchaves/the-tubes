@@ -5,6 +5,7 @@ import { request as httpsRequest } from 'node:https';
 import { connect as netConnect } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { loadCaptureRequest, loadCaptureWs } from './manifest.js';
+import { resolveVars, renderDeep, renderString, applyBodyPatch } from './template.js';
 import { createDebug } from '../debug.js';
 
 const debug = createDebug('replay');
@@ -37,6 +38,9 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
   if (dryRun) console.log(styleText('yellow', '  DRY RUN — no requests will be sent'));
   console.log(`  loops: ${loop}  loop-pause: ${loopPauseMs}ms  warmup: ${warmupMs}ms`);
 
+  // Resolve global vars once before the loop — stable across all iterations
+  const globalVars = resolveVars(manifest.vars, {});
+
   if (warmupMs > 0) {
     debug('warmup %dms', warmupMs);
     await sleep(warmupMs);
@@ -48,34 +52,53 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
     for (const [stepIdx, step] of manifest.steps.entries()) {
       const total = manifest.steps.length;
       const isWs = step.type === 'ws';
-      const capturePath = resolve(manifestDir, step.capture ?? step.request);
+      const isInline = !(step.capture ?? step.request);
+
+      // Step vars re-resolve each iteration; they can reference global vars
+      const stepVars = resolveVars(step.vars, globalVars);
+      const context = { ...globalVars, ...stepVars };
 
       if (isWs) {
         // ── WebSocket step ──────────────────────────────────────────────────
         let wsData;
-        try {
-          wsData = loadCaptureWs(capturePath);
-        } catch (err) {
-          console.error(styleText('red', `  [${stepIdx + 1}] Error: ${err.message}`));
-          onStep?.({ stepIdx, total, method: 'WS', url: capturePath, status: null, durationMs: 0, error: err.message });
-          continue;
+        if (isInline) {
+          wsData = renderDeep({
+            path: step.path ?? '/',
+            headers: step.headers ?? {},
+            frames: step.frames ?? [],
+          }, context);
+        } else {
+          const capturePath = resolve(manifestDir, step.capture ?? step.request);
+          try {
+            wsData = loadCaptureWs(capturePath);
+          } catch (err) {
+            console.error(styleText('red', `  [${stepIdx + 1}] Error: ${err.message}`));
+            onStep?.({ stepIdx, total, method: 'WS', url: capturePath, status: null, durationMs: 0, error: err.message });
+            continue;
+          }
+        }
+
+        // Apply overrides
+        if (step.overrides?.path) {
+          wsData.path = renderString(step.overrides.path, context);
         }
 
         // Build WS URL: convert http(s) target to ws(s), then append captured path
         const baseWs = target.replace(/^http:/, 'ws:').replace(/^https:/, 'wss:').replace(/\/$/, '');
         const finalUrl = `${baseWs}${wsData.path}`;
 
-        // Build headers — optionally strip Host
+        // Build headers — optionally strip Host and WS handshake headers
         const headers = {};
         for (const [k, v] of Object.entries(wsData.headers ?? {})) {
           if (k.toLowerCase() === 'host' && !sendHostHeader) continue;
-          // Strip WebSocket handshake headers (we generate fresh ones)
           const kl = k.toLowerCase();
           if (['upgrade', 'connection', 'sec-websocket-key', 'sec-websocket-version',
                'sec-websocket-extensions', 'sec-websocket-protocol'].includes(kl)) continue;
           headers[k] = Array.isArray(v) ? v[0] : String(v);
         }
-        if (step.overrides?.headers) Object.assign(headers, step.overrides.headers);
+        if (step.overrides?.headers) {
+          Object.assign(headers, renderDeep(step.overrides.headers, context));
+        }
 
         if (dryRun) {
           const clientCount = (wsData.frames ?? []).filter(f => f.dir === 'client').length;
@@ -99,11 +122,27 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
       } else {
         // ── HTTP step ───────────────────────────────────────────────────────
         let reqData;
-        try {
-          reqData = loadCaptureRequest(capturePath);
-        } catch (err) {
-          console.error(styleText('red', `  [${stepIdx + 1}] Error: ${err.message}`));
-          continue;
+        if (isInline) {
+          reqData = renderDeep({
+            method: step.method ?? 'POST',
+            path: step.path ?? '/',
+            headers: step.headers ?? {},
+            body: step.body,
+            bodyEncoding: step.bodyEncoding ?? 'utf8',
+          }, context);
+        } else {
+          const capturePath = resolve(manifestDir, step.capture ?? step.request);
+          try {
+            reqData = loadCaptureRequest(capturePath);
+          } catch (err) {
+            console.error(styleText('red', `  [${stepIdx + 1}] Error: ${err.message}`));
+            continue;
+          }
+        }
+
+        // Apply overrides
+        if (step.overrides?.path) {
+          reqData.path = renderString(step.overrides.path, context);
         }
 
         // Build headers — optionally strip Host
@@ -112,16 +151,22 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
           if (k.toLowerCase() === 'host' && !sendHostHeader) continue;
           headers[k] = Array.isArray(v) ? v[0] : String(v);
         }
-
-        // Apply step overrides
         if (step.overrides?.headers) {
-          Object.assign(headers, step.overrides.headers);
+          Object.assign(headers, renderDeep(step.overrides.headers, context));
         }
 
-        // Build body
+        // Apply body overrides before body processing
+        if (step.overrides?.body != null) {
+          reqData.body = renderString(String(step.overrides.body), context);
+        } else if (step.overrides?.bodyPatch) {
+          const raw = String(reqData.body ?? '{}');
+          reqData.body = applyBodyPatch(raw, step.overrides.bodyPatch, context);
+        }
+
+        // Build body buffer
         let body;
         const bodyEncoding = reqData.bodyEncoding ?? 'utf8';
-        if (reqData.body || reqData.body === '') {
+        if (reqData.body != null) {
           const rawBody = String(reqData.body);
           if (bodyEncoding === 'base64') {
             body = Buffer.from(rawBody, 'base64');

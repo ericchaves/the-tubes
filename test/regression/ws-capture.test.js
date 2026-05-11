@@ -90,6 +90,7 @@ function makeCluster(tunnelPort, localPort, captureDir) {
     rewriteHostHeader: false,
     reconnectLocal: true,
     captureDir,
+    captureEnabled: true,
   };
   const tracker = new FailureTracker({ windowS: 60, maxInWindow: 20, maxTotal: 100 });
   const policy = new ReconnectPolicy({ initialDelayMs: 10, maxDelayMs: 100 });

@@ -41,8 +41,30 @@ export function loadManifest(manifestPath) {
     }));
   }
 
+  for (const [i, step] of manifest.steps.entries()) {
+    _validateStep(step, i);
+  }
+
   const manifestDir = dirname(absPath);
   return { manifest, manifestDir };
+}
+
+function _validateStep(step, idx) {
+  const isCapture = !!(step.capture ?? step.request);
+  const isWs = step.type === 'ws';
+
+  if (isCapture) return;
+
+  // Inline step — validate minimum required fields
+  if (isWs) {
+    if (!step.path) {
+      throw new ConfigError(`Step ${idx + 1}: inline WebSocket step must have a "path" field`);
+    }
+  } else {
+    if (!step.path) {
+      throw new ConfigError(`Step ${idx + 1}: inline HTTP step must have a "path" field`);
+    }
+  }
 }
 
 /**

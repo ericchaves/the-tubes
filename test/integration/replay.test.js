@@ -32,6 +32,13 @@ function writeManifest(name, manifestObj) {
   return path;
 }
 
+// Write manifest as raw YAML string (needed when values contain {{ }})
+function writeManifestRaw(name, yamlStr) {
+  const path = join(tmpDir, name);
+  writeFileSync(path, yamlStr);
+  return path;
+}
+
 function startTarget(handler) {
   return new Promise((resolve) => {
     const reqs = [];
@@ -51,10 +58,13 @@ function startTarget(handler) {
 }
 
 function stopTarget(server) {
-  return new Promise(r => server.close(r));
+  return new Promise(r => {
+    server.closeAllConnections?.();
+    server.close(r);
+  });
 }
 
-// ─── Tests ──────────────────────────────────────────────────────────────────
+// ─── Original tests ──────────────────────────────────────────────────────────
 
 describe('loadManifest', () => {
   before(setup);
@@ -141,13 +151,13 @@ describe('loadCaptureRequest', () => {
   });
 });
 
-describe('runReplaySession', () => {
+describe('runReplaySession — existing behavior', () => {
   let tmpDir2;
   before(() => { tmpDir2 = mkdtempSync(join(tmpdir(), 'replay-run-')); });
   after(() => { rmSync(tmpDir2, { recursive: true, force: true }); });
 
   it('sends each step to the target', async () => {
-    let { server, port, reqs, url } = await startTarget((req, res) => {
+    let { server, reqs, url } = await startTarget((req, res) => {
       res.writeHead(200);
       res.end('ok');
     });
@@ -268,6 +278,508 @@ describe('runReplaySession', () => {
     const elapsed = Date.now() - start;
 
     assert.ok(elapsed >= 50, `Expected ≥50ms elapsed, got ${elapsed}ms`);
+    await stopTarget(server);
+  });
+});
+
+// ─── New tests: inline steps ─────────────────────────────────────────────────
+
+describe('runReplaySession — inline HTTP steps', () => {
+  let dir;
+  before(() => { dir = mkdtempSync(join(tmpdir(), 'replay-inline-')); });
+  after(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it('sends an inline HTTP step without a capture file', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    const manifest = {
+      target: url,
+      steps: [{
+        method: 'POST',
+        path: '/inline',
+        headers: {},
+        body: '{"source":"inline"}',
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs.length, 1);
+    assert.equal(reqs[0].method, 'POST');
+    assert.equal(reqs[0].path, '/inline');
+    assert.deepEqual(JSON.parse(reqs[0].body.toString()), { source: 'inline' });
+    await stopTarget(server);
+  });
+
+  it('defaults method to POST when not specified in inline step', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    const manifest = { target: url, steps: [{ path: '/default-method', body: 'x' }] };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].method, 'POST');
+    await stopTarget(server);
+  });
+
+  it('sends inline GET step without body', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    const manifest = { target: url, steps: [{ method: 'GET', path: '/ping' }] };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].method, 'GET');
+    assert.equal(reqs[0].body.length, 0);
+    await stopTarget(server);
+  });
+});
+
+// ─── New tests: global vars ───────────────────────────────────────────────────
+
+describe('runReplaySession — global vars', () => {
+  let dir;
+  before(() => { dir = mkdtempSync(join(tmpdir(), 'replay-gvars-')); });
+  after(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it('injects global vars into inline step body', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    const manifest = {
+      target: url,
+      vars: { env: 'staging' },
+      steps: [{
+        method: 'POST',
+        path: '/x',
+        body: '{"env":"{{ env }}"}',
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(JSON.parse(reqs[0].body.toString()).env, 'staging');
+    await stopTarget(server);
+  });
+
+  it('injects global vars into inline step headers', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    const manifest = {
+      target: url,
+      vars: { token: 'secret-123' },
+      steps: [{
+        method: 'GET',
+        path: '/x',
+        headers: { 'x-token': '{{ token }}' },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].headers['x-token'], 'secret-123');
+    await stopTarget(server);
+  });
+
+  it('global vars resolved with faker produce a valid UUID', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    const manifestPath = join(dir, 'faker-vars.yaml');
+    writeFileSync(manifestPath, [
+      `target: ${url}`,
+      'vars:',
+      '  sessionId: "{{ faker.string.uuid() }}"',
+      'steps:',
+      '  - method: POST',
+      '    path: /x',
+      '    body: \'{"id":"{{ sessionId }}"}\' ',
+    ].join('\n'));
+
+    const { manifest, manifestDir } = loadManifest(manifestPath);
+    await runReplaySession(manifest, manifestDir, {});
+
+    const body = JSON.parse(reqs[0].body.toString());
+    assert.match(body.id, /^[0-9a-f-]{36}$/);
+    await stopTarget(server);
+  });
+
+  it('global vars are stable across loop iterations', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    const manifestPath = join(dir, 'stable-gvars.yaml');
+    writeFileSync(manifestPath, [
+      `target: ${url}`,
+      'vars:',
+      '  sessionId: "{{ faker.string.uuid() }}"',
+      'steps:',
+      '  - method: POST',
+      '    path: /x',
+      '    body: \'{"id":"{{ sessionId }}"}\' ',
+    ].join('\n'));
+
+    const { manifest, manifestDir } = loadManifest(manifestPath);
+    await runReplaySession(manifest, manifestDir, { loop: 3 });
+
+    assert.equal(reqs.length, 3);
+    const ids = reqs.map(r => JSON.parse(r.body.toString()).id);
+    // All three iterations must have the same sessionId
+    assert.equal(ids[0], ids[1]);
+    assert.equal(ids[1], ids[2]);
+    await stopTarget(server);
+  });
+
+  it('global vars with nested objects are injected correctly', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    const manifest = {
+      target: url,
+      vars: { user: { name: 'Alice', role: 'admin' } },
+      steps: [{
+        method: 'POST',
+        path: '/x',
+        body: '{"name":"{{ user.name }}","role":"{{ user.role }}"}',
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    const body = JSON.parse(reqs[0].body.toString());
+    assert.equal(body.name, 'Alice');
+    assert.equal(body.role, 'admin');
+    await stopTarget(server);
+  });
+});
+
+// ─── New tests: step-level vars ───────────────────────────────────────────────
+
+describe('runReplaySession — step vars', () => {
+  let dir;
+  before(() => { dir = mkdtempSync(join(tmpdir(), 'replay-svars-')); });
+  after(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it('injects step vars into inline step body', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    const manifest = {
+      target: url,
+      steps: [{
+        method: 'POST',
+        path: '/x',
+        vars: { label: 'from-step' },
+        body: '{"label":"{{ label }}"}',
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(JSON.parse(reqs[0].body.toString()).label, 'from-step');
+    await stopTarget(server);
+  });
+
+  it('step vars re-render per loop iteration (faker produces different values)', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    const manifestPath = join(dir, 'step-faker.yaml');
+    writeFileSync(manifestPath, [
+      `target: ${url}`,
+      'steps:',
+      '  - method: POST',
+      '    path: /x',
+      '    vars:',
+      '      eventId: "{{ faker.string.uuid() }}"',
+      '    body: \'{"id":"{{ eventId }}"}\' ',
+    ].join('\n'));
+
+    const { manifest, manifestDir } = loadManifest(manifestPath);
+    await runReplaySession(manifest, manifestDir, { loop: 3 });
+
+    assert.equal(reqs.length, 3);
+    const ids = reqs.map(r => JSON.parse(r.body.toString()).id);
+    // At least two of the three UUIDs should differ (faker re-renders each iteration)
+    const unique = new Set(ids);
+    assert.ok(unique.size > 1, `Expected different UUIDs across iterations, got: ${ids.join(', ')}`);
+    await stopTarget(server);
+  });
+
+  it('step vars can reference global vars in their template', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    const manifest = {
+      target: url,
+      vars: { prefix: 'event' },
+      steps: [{
+        method: 'POST',
+        path: '/x',
+        vars: { label: '{{ prefix }}-001' },
+        body: '{"label":"{{ label }}"}',
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(JSON.parse(reqs[0].body.toString()).label, 'event-001');
+    await stopTarget(server);
+  });
+
+  it('step vars override global vars with same name', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    const manifest = {
+      target: url,
+      vars: { color: 'blue' },
+      steps: [{
+        method: 'POST',
+        path: '/x',
+        vars: { color: 'red' },
+        body: '{"color":"{{ color }}"}',
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(JSON.parse(reqs[0].body.toString()).color, 'red');
+    await stopTarget(server);
+  });
+});
+
+// ─── New tests: overrides ─────────────────────────────────────────────────────
+
+describe('runReplaySession — overrides (path, body, bodyPatch)', () => {
+  let dir;
+  before(() => { dir = mkdtempSync(join(tmpdir(), 'replay-overrides-')); });
+  after(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it('overrides.path changes the request path', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'path-cap.req.yaml'), stringify({
+      request: { method: 'POST', path: '/original', headers: {}, body: 'x' },
+    }));
+
+    const manifest = {
+      target: url,
+      steps: [{
+        capture: './path-cap.req.yaml',
+        overrides: { path: '/overridden' },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].path, '/overridden');
+    await stopTarget(server);
+  });
+
+  it('overrides.path supports template syntax', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'path-tmpl-cap.req.yaml'), stringify({
+      request: { method: 'GET', path: '/original', headers: {} },
+    }));
+
+    const manifest = {
+      target: url,
+      vars: { version: 'v2' },
+      steps: [{
+        capture: './path-tmpl-cap.req.yaml',
+        overrides: { path: '/api/{{ version }}/resource' },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].path, '/api/v2/resource');
+    await stopTarget(server);
+  });
+
+  it('overrides.body replaces the entire body', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'body-cap.req.yaml'), stringify({
+      request: { method: 'POST', path: '/x', headers: {}, body: '{"original":true}' },
+    }));
+
+    const manifest = {
+      target: url,
+      steps: [{
+        capture: './body-cap.req.yaml',
+        overrides: { body: '{"replaced":true}' },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.deepEqual(JSON.parse(reqs[0].body.toString()), { replaced: true });
+    await stopTarget(server);
+  });
+
+  it('overrides.body supports template syntax', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'body-tmpl-cap.req.yaml'), stringify({
+      request: { method: 'POST', path: '/x', headers: {}, body: '{}' },
+    }));
+
+    const manifestPath = join(dir, 'body-tmpl-manifest.yaml');
+    writeFileSync(manifestPath, [
+      `target: ${url}`,
+      'vars:',
+      '  name: Alice',
+      'steps:',
+      '  - capture: ./body-tmpl-cap.req.yaml',
+      '    overrides:',
+      '      body: \'{"name":"{{ name }}"}\' ',
+    ].join('\n'));
+
+    const { manifest, manifestDir } = loadManifest(manifestPath);
+    await runReplaySession(manifest, manifestDir, {});
+
+    assert.equal(JSON.parse(reqs[0].body.toString()).name, 'Alice');
+    await stopTarget(server);
+  });
+
+  it('overrides.bodyPatch modifies a specific field leaving others intact', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'patch-cap.req.yaml'), stringify({
+      request: { method: 'POST', path: '/x', headers: {}, body: '{"a":1,"b":2,"c":3}' },
+    }));
+
+    const manifest = {
+      target: url,
+      steps: [{
+        capture: './patch-cap.req.yaml',
+        overrides: { bodyPatch: { a: '99' } },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    const body = JSON.parse(reqs[0].body.toString());
+    assert.equal(body.a, '99');
+    assert.equal(body.b, 2);
+    assert.equal(body.c, 3);
+    await stopTarget(server);
+  });
+
+  it('overrides.bodyPatch uses dot notation for nested field', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'patch-nested-cap.req.yaml'), stringify({
+      request: { method: 'POST', path: '/x', headers: {}, body: '{"user":{"name":"old","age":30}}' },
+    }));
+
+    const manifest = {
+      target: url,
+      steps: [{
+        capture: './patch-nested-cap.req.yaml',
+        overrides: { bodyPatch: { 'user.name': 'new' } },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    const body = JSON.parse(reqs[0].body.toString());
+    assert.equal(body.user.name, 'new');
+    assert.equal(body.user.age, 30);
+    await stopTarget(server);
+  });
+
+  it('overrides.bodyPatch uses bracket notation for array element', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'patch-arr-cap.req.yaml'), stringify({
+      request: { method: 'POST', path: '/x', headers: {}, body: '{"entry":[{"id":"old","v":1}]}' },
+    }));
+
+    const manifest = {
+      target: url,
+      steps: [{
+        capture: './patch-arr-cap.req.yaml',
+        overrides: { bodyPatch: { 'entry[0].id': 'new-id' } },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    const body = JSON.parse(reqs[0].body.toString());
+    assert.equal(body.entry[0].id, 'new-id');
+    assert.equal(body.entry[0].v, 1);
+    await stopTarget(server);
+  });
+
+  it('overrides.bodyPatch renders template values', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'patch-tmpl-cap.req.yaml'), stringify({
+      request: { method: 'POST', path: '/x', headers: {}, body: '{"name":"old"}' },
+    }));
+
+    const manifest = {
+      target: url,
+      vars: { newName: 'Alice' },
+      steps: [{
+        capture: './patch-tmpl-cap.req.yaml',
+        overrides: { bodyPatch: { name: '{{ newName }}' } },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(JSON.parse(reqs[0].body.toString()).name, 'Alice');
+    await stopTarget(server);
+  });
+
+  it('overrides.headers supports template values', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'hdr-tmpl-cap.req.yaml'), stringify({
+      request: { method: 'POST', path: '/x', headers: {}, body: 'x' },
+    }));
+
+    const manifest = {
+      target: url,
+      vars: { token: 'tok-abc' },
+      steps: [{
+        capture: './hdr-tmpl-cap.req.yaml',
+        overrides: { headers: { 'x-token': '{{ token }}' } },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].headers['x-token'], 'tok-abc');
+    await stopTarget(server);
+  });
+});
+
+// ─── New tests: capture files not rendered ────────────────────────────────────
+
+describe('runReplaySession — capture files not rendered', () => {
+  let dir;
+  before(() => { dir = mkdtempSync(join(tmpdir(), 'replay-norender-')); });
+  after(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it('leaves {{ }} literal in capture file body untouched', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    // Simulate a body that happens to contain {{ }} (e.g. from a Handlebars app)
+    writeFileSync(join(dir, 'literal-braces.req.yaml'), stringify({
+      request: { method: 'POST', path: '/x', headers: {}, body: '{"tmpl":"{{not_a_var}}"}' },
+    }));
+
+    const manifest = {
+      target: url,
+      steps: [{ capture: './literal-braces.req.yaml' }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    const body = JSON.parse(reqs[0].body.toString());
+    assert.equal(body.tmpl, '{{not_a_var}}');
+    await stopTarget(server);
+  });
+
+  it('bodyPatch still applies to capture file body after skipping render', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'patch-over-cap.req.yaml'), stringify({
+      request: { method: 'POST', path: '/x', headers: {}, body: '{"a":1,"b":2}' },
+    }));
+
+    const manifest = {
+      target: url,
+      steps: [{
+        capture: './patch-over-cap.req.yaml',
+        overrides: { bodyPatch: { a: 'patched' } },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    const body = JSON.parse(reqs[0].body.toString());
+    assert.equal(body.a, 'patched');
+    assert.equal(body.b, 2);
     await stopTarget(server);
   });
 });

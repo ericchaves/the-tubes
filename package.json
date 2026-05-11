@@ -19,5 +19,9 @@
     "test:e2e": "node --test 'test/e2e/**/*.test.js'",
     "test:all": "node --test 'test/unit/**/*.test.js' 'test/integration/**/*.test.js' 'test/regression/**/*.test.js' 'test/e2e/**/*.test.js'"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "@faker-js/faker": "^10.4.0",
+    "nunjucks": "^3.2.4"
+  }
 }
