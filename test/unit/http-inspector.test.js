@@ -50,7 +50,7 @@ describe('HttpInspector', () => {
     assert.equal(doc.request.method, 'POST');
     assert.equal(doc.request.path, '/webhook');
     assert.equal(doc.request.bodyEncoding, 'utf8');
-    assert.equal(doc.request.body.trim(), '{"a":1}');
+    assert.deepEqual(JSON.parse(doc.request.body), { a: 1 });
   });
 
   it('should capture a response and produce a .res.yaml file', () => {

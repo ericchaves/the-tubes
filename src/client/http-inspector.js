@@ -164,7 +164,12 @@ export class HttpInspector {
     // Try UTF-8 text
     const text = body.toString('utf8');
     if (!_hasBinaryChars(text)) {
-      return { encoding: 'utf8', data: text, ...(truncated ? { truncated } : {}) };
+      let data = text;
+      const trimmed = text.trim();
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try { data = JSON.stringify(JSON.parse(trimmed), null, 2); } catch { /* not JSON */ }
+      }
+      return { encoding: 'utf8', data, ...(truncated ? { truncated } : {}) };
     }
 
     // Binary: small → base64 inline, large → external file
