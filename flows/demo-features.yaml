@@ -1,0 +1,197 @@
+target: http://demo.tt.localhost:8080
+
+# ─────────────────────────────────────────────────────────────────
+# GLOBAL VARS
+# Resolvidas UMA vez antes do loop. Estáveis para todos os steps.
+# Suportam templates Nunjucks e faker.js via {{ faker.<módulo>.<método> }}.
+# Objetos aninhados funcionam normalmente — acesse com dot notation nos templates.
+# ─────────────────────────────────────────────────────────────────
+vars:
+  # Valor simples gerado pelo faker
+  sessionId: "{{ faker.string.alphanumeric(16) }}"
+
+  # Objeto aninhado — acesse campos individuais com dot notation nos steps
+  user:
+    name: "{{ faker.person.fullName() }}"
+    email: "{{ faker.internet.email() }}"
+    role: editor
+
+  # Objeto de produto com preço e SKU aleatórios
+  product:
+    name: "{{ faker.commerce.productName() }}"
+    sku: "{{ faker.string.alphanumeric(8).toUpperCase() }}"
+    price: "{{ faker.commerce.price({ min: 10, max: 500 }) }}"
+
+steps:
+  # ───────────────────────────────────────────────────────────────
+  # STEP 1 — override de PATH
+  # A captura aponta para GET /. Com overrides.path o path é
+  # substituído por um template antes de enviar a requisição.
+  # ───────────────────────────────────────────────────────────────
+  - capture: demo/demo.312699854155776.req.yaml
+    # overrides.path substitui o path da captura por um valor dinâmico.
+    # Aqui adicionamos um query param usando a var global sessionId.
+    overrides:
+      path: "/?session={{ sessionId }}"
+
+  # ───────────────────────────────────────────────────────────────
+  # STEP 2 — override de HEADERS
+  # A captura é GET /api/users. Adicionamos/sobrescrevemos headers
+  # sem tocar no path nem no body.
+  # ───────────────────────────────────────────────────────────────
+  - capture: demo/demo.312699854192640.req.yaml
+    idleMs: 150
+    # overrides.headers é mergeado com os headers da captura.
+    # Chaves existentes são sobrescritas; chaves novas são adicionadas.
+    overrides:
+      headers:
+        x-session-id: "{{ sessionId }}"
+        x-requested-by: "{{ user.name }}"   # dot notation em global var (objeto aninhado)
+        accept: "application/json"
+
+  # ───────────────────────────────────────────────────────────────
+  # STEP 3 — STEP VARS + dot notation
+  # Step vars são re-resolvidas a cada iteração de loop e podem
+  # referenciar global vars diretamente.
+  # ───────────────────────────────────────────────────────────────
+  - capture: demo/demo.312699854229504.req.yaml
+    idleMs: 150
+    # Step vars: resolvidas APÓS as global vars, portanto podem usar
+    # {{ user.email }}, {{ product.sku }}, etc.
+    vars:
+      category: "{{ faker.commerce.department() }}"
+      # Demonstração de dot notation acessando objeto global aninhado
+      ownerEmail: "{{ user.email }}"
+    overrides:
+      path: "/api/products?category={{ category }}&owner={{ ownerEmail }}"
+      headers:
+        x-user-name: "{{ user.name }}"   # global var — dot notation
+
+  # ───────────────────────────────────────────────────────────────
+  # STEP 4 — override de BODY (substituição completa)
+  # overrides.body substitui o body INTEIRO da captura por um template.
+  # Útil quando o schema da requisição muda completamente.
+  # ───────────────────────────────────────────────────────────────
+  - capture: demo/demo.312699854266368.req.yaml
+    idleMs: 150
+    vars:
+      eventPath: "{{ faker.internet.url() }}"
+    # overrides.body é uma string — pode ser template Nunjucks.
+    # O body da captura é descartado e este é usado no lugar.
+    overrides:
+      body: >-
+        {"event":"page_view","path":"{{ eventPath }}","session":"{{ sessionId }}","user":"{{ user.email }}"}
+      headers:
+        content-type: "application/json"
+
+  # ───────────────────────────────────────────────────────────────
+  # STEP 5 — bodyPatch com dot notation
+  # bodyPatch modifica campos ESPECÍFICOS do JSON capturado, preservando
+  # o restante. As chaves usam dot notation (suporta arrays com [n]).
+  # ───────────────────────────────────────────────────────────────
+  - capture: demo/demo.312699854303232.req.yaml
+    idleMs: 150
+    vars:
+      qty: "{{ faker.number.int({ min: 1, max: 20 }) }}"
+    # bodyPatch recebe um mapa de path → valor (template).
+    # O JSON do body capturado é parsed, os campos são atualizados,
+    # e o resultado é re-serializado.
+    overrides:
+      bodyPatch:
+        product: "{{ product.name }}"          # substitui campo de topo
+        qty: "{{ qty }}"                        # valor da step var
+        price: "{{ product.price }}"            # dot notation em global var (objeto)
+        customer: "{{ user.email }}"            # dot notation: user.email
+
+  # ───────────────────────────────────────────────────────────────
+  # STEP 6 — combinação: step vars com objetos + bodyPatch aninhado
+  # Demonstra bodyPatch em campos profundos usando dot notation.
+  # ───────────────────────────────────────────────────────────────
+  - capture: demo/demo.312699858284544.req.yaml
+    idleMs: 150
+    vars:
+      # Step var que é ela própria um objeto — acessível via dot notation
+      address:
+        city: "{{ faker.location.city() }}"
+        zipcode: "{{ faker.location.zipCode() }}"
+    overrides:
+      bodyPatch:
+        name: "{{ user.name }}"         # campo simples
+        email: "{{ user.email }}"       # campo simples
+        role: "{{ user.role }}"
+        # dot notation para escrever em campo aninhado
+        # (se o body não tiver esse campo, ele é criado)
+        "meta.city": "{{ address.city }}"
+        "meta.zip": "{{ address.zipcode }}"
+
+  # ───────────────────────────────────────────────────────────────
+  # STEP 7 — override de PATH com ID dinâmico
+  # Demonstra como substituir o ID hardcoded (/api/users/42) por um
+  # valor gerado. Combina step var + template no path.
+  # ───────────────────────────────────────────────────────────────
+  - capture: demo/demo.312699858317312.req.yaml
+    idleMs: 150
+    vars:
+      userId: "{{ faker.number.int({ min: 100, max: 9999 }) }}"
+    overrides:
+      # substitui o path inteiro — o ID da captura (42) é ignorado
+      path: "/api/users/{{ userId }}"
+      bodyPatch:
+        name: "{{ user.name }}"
+        role: admin
+
+  # ───────────────────────────────────────────────────────────────
+  # STEP 8 — combinação completa: path + headers + bodyPatch
+  # Todos os três tipos de override usados juntos no mesmo step.
+  # ───────────────────────────────────────────────────────────────
+  - capture: demo/demo.312699858354176.req.yaml
+    idleMs: 150
+    vars:
+      orderId: "{{ faker.number.int({ min: 1000, max: 9999 }) }}"
+      trackingCode: "BR{{ faker.string.numeric(9) }}"
+    overrides:
+      # 1) path com query param dinâmico
+      path: "/api/orders/{{ orderId }}?notify=true&by={{ user.email }}"
+      # 2) header extra identificando a sessão
+      headers:
+        x-session-id: "{{ sessionId }}"
+        x-operator: "{{ user.name }}"
+      # 3) bodyPatch com dot notation e step vars
+      bodyPatch:
+        status: shipped
+        tracking: "{{ trackingCode }}"
+        "audit.updatedBy": "{{ user.email }}"   # campo aninhado criado se não existir
+
+  # ───────────────────────────────────────────────────────────────
+  # STEP 9 — DELETE com path dinâmico (reutiliza userId do step anterior)
+  # Nota: userId foi declarado como step var no step 7, portanto não
+  # está disponível aqui — declaramos novamente. Global vars (user,
+  # product, sessionId) continuam disponíveis em todos os steps.
+  # ───────────────────────────────────────────────────────────────
+  - capture: demo/demo.312699858391040.req.yaml
+    idleMs: 150
+    vars:
+      userId: "{{ faker.number.int({ min: 100, max: 9999 }) }}"
+    overrides:
+      path: "/api/users/{{ userId }}"
+      headers:
+        x-deleted-by: "{{ user.email }}"
+
+  # ───────────────────────────────────────────────────────────────
+  # STEP 10 — body de template como JSON literal (sintaxe alternativa)
+  # Em vez de bodyPatch, usa overrides.body com JSON inline completo.
+  # Útil quando o body inteiro deve ser regenerado a cada iteração.
+  # ───────────────────────────────────────────────────────────────
+  - capture: demo/demo.312699858423808.req.yaml
+    idleMs: 150
+    vars:
+      orderId: "{{ faker.number.int({ min: 1000, max: 9999 }) }}"
+      reason: "{{ faker.helpers.arrayElement(['cancelled','duplicated','fraud','returned']) }}"
+    overrides:
+      path: "/api/orders/{{ orderId }}?reason={{ reason }}"
+      # body completo substituído por template — captura descartada
+      body: >-
+        {"reason":"{{ reason }}","requestedBy":"{{ user.email }}","session":"{{ sessionId }}"}
+      headers:
+        content-type: "application/json"
+        x-session-id: "{{ sessionId }}"
