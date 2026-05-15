@@ -1,5 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -1142,6 +1143,112 @@ describe('runReplaySession — excludeHeaders', () => {
     await runReplaySession(manifest, dir, {});
 
     assert.equal(reqs[0].headers['x-captured'], 'injected');
+    await stopTarget(server);
+  });
+});
+
+// ─── HMAC signature headers ───────────────────────────────────────────────────
+
+describe('runReplaySession — HMAC signature headers', () => {
+  let dir;
+  before(() => { dir = mkdtempSync(join(tmpdir(), 'replay-hmac-')); });
+  after(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it('recalculates x-hub-signature-256 using hmacSha256 template function', async () => {
+    const secret = 'test-app-secret';
+    const body = '{"entry":[{"id":"123"}]}';
+    const expectedSig = 'sha256=' + createHmac('sha256', secret).update(body).digest('hex');
+
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'hmac-cap.req.yaml'), stringify({
+      request: {
+        method: 'POST',
+        path: '/webhook',
+        headers: { 'content-type': 'application/json', 'x-hub-signature-256': 'sha256=stale' },
+        body,
+      },
+    }));
+
+    const manifest = {
+      target: url,
+      vars: { APP_SECRET: secret },
+      steps: [{
+        capture: './hmac-cap.req.yaml',
+        overrides: {
+          headers: {
+            'x-hub-signature-256': "sha256={{ hmacSha256(body, APP_SECRET) }}",
+          },
+        },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].headers['x-hub-signature-256'], expectedSig);
+    await stopTarget(server);
+  });
+
+  it('recalculates x-hub-signature using hmacSha1 template function', async () => {
+    const secret = 'test-app-secret';
+    const body = '{"entry":[{"id":"123"}]}';
+    const expectedSig = 'sha1=' + createHmac('sha1', secret).update(body).digest('hex');
+
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'hmac1-cap.req.yaml'), stringify({
+      request: {
+        method: 'POST',
+        path: '/webhook',
+        headers: { 'content-type': 'application/json', 'x-hub-signature': 'sha1=stale' },
+        body,
+      },
+    }));
+
+    const manifest = {
+      target: url,
+      vars: { APP_SECRET: secret },
+      steps: [{
+        capture: './hmac1-cap.req.yaml',
+        overrides: {
+          headers: {
+            'x-hub-signature': "sha1={{ hmacSha1(body, APP_SECRET) }}",
+          },
+        },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].headers['x-hub-signature'], expectedSig);
+    await stopTarget(server);
+  });
+
+  it('secret can come from .env file via dotenv variable', async () => {
+    const secret = 'env-file-secret';
+    const body = 'hello world';
+    const expectedSig = 'sha256=' + createHmac('sha256', secret).update(body).digest('hex');
+
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, '.env.hmac'), `APP_SECRET=${secret}\n`);
+    writeFileSync(join(dir, 'hmac-env-cap.req.yaml'), stringify({
+      request: { method: 'POST', path: '/wh', headers: {}, body },
+    }));
+
+    const manifest = {
+      target: url,
+      dotenv: ['./.env.hmac'],
+      steps: [{
+        capture: './hmac-env-cap.req.yaml',
+        overrides: {
+          headers: {
+            'x-hub-signature-256': "sha256={{ hmacSha256(body, APP_SECRET) }}",
+          },
+        },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].headers['x-hub-signature-256'], expectedSig);
     await stopTarget(server);
   });
 });

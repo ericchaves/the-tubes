@@ -209,10 +209,6 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
           if (excludeSet.has(kl)) continue;
           headers[k] = Array.isArray(v) ? v[0] : String(v);
         }
-        if (step.overrides?.headers) {
-          Object.assign(headers, renderDeep(step.overrides.headers, context));
-        }
-
         // Apply body overrides before body processing
         if (step.overrides?.body != null) {
           reqData.body = renderString(String(step.overrides.body), context);
@@ -241,6 +237,12 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
               body = rawBody;
             }
           }
+        }
+
+        // Apply header overrides after body is built so templates can reference body for HMAC etc.
+        if (step.overrides?.headers) {
+          const headerCtx = body != null ? { ...context, body } : context;
+          Object.assign(headers, renderDeep(step.overrides.headers, headerCtx));
         }
 
         // Build final URL: preserve captured path and querystring against target base

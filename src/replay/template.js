@@ -1,7 +1,18 @@
+import { createHmac } from 'crypto';
 import nunjucks from 'nunjucks';
 import { faker } from '@faker-js/faker';
 
 const env = new nunjucks.Environment(null, { throwOnUndefined: false, autoescape: false });
+
+env.addGlobal('hmacSha256', (data, key) => {
+  if (data == null || key == null) return '';
+  return createHmac('sha256', String(key)).update(data).digest('hex');
+});
+
+env.addGlobal('hmacSha1', (data, key) => {
+  if (data == null || key == null) return '';
+  return createHmac('sha1', String(key)).update(data).digest('hex');
+});
 
 /**
  * Render a Nunjucks template string with the given context.
