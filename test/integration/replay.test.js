@@ -1023,3 +1023,208 @@ describe('runReplaySession — capture files not rendered', () => {
     await stopTarget(server);
   });
 });
+
+// ─── excludeHeaders ───────────────────────────────────────────────────────────
+
+describe('runReplaySession — excludeHeaders', () => {
+  let dir;
+  before(() => { dir = mkdtempSync(join(tmpdir(), 'replay-exclude-')); });
+  after(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it('manifest-level excludeHeaders drops header from captured request', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'exc-cap.req.yaml'), stringify({
+      request: {
+        method: 'POST', path: '/x',
+        headers: { 'x-forwarded-for': '1.2.3.4', 'content-type': 'application/json' },
+        body: '{}',
+      },
+    }));
+
+    const manifest = {
+      target: url,
+      excludeHeaders: ['x-forwarded-for'],
+      steps: [{ capture: './exc-cap.req.yaml' }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].headers['x-forwarded-for'], undefined);
+    assert.equal(reqs[0].headers['content-type'], 'application/json');
+    await stopTarget(server);
+  });
+
+  it('step-level overrides.excludeHeaders drops header only for that step', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'step-exc-cap1.req.yaml'), stringify({
+      request: { method: 'POST', path: '/x', headers: { 'x-internal': 'secret', 'x-keep': 'yes' }, body: '{}' },
+    }));
+    writeFileSync(join(dir, 'step-exc-cap2.req.yaml'), stringify({
+      request: { method: 'POST', path: '/x', headers: { 'x-internal': 'secret', 'x-keep': 'yes' }, body: '{}' },
+    }));
+
+    const manifest = {
+      target: url,
+      steps: [
+        { capture: './step-exc-cap1.req.yaml', overrides: { excludeHeaders: ['x-internal'] } },
+        { capture: './step-exc-cap2.req.yaml' },
+      ],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].headers['x-internal'], undefined);
+    assert.equal(reqs[0].headers['x-keep'], 'yes');
+    assert.equal(reqs[1].headers['x-internal'], 'secret');
+    await stopTarget(server);
+  });
+
+  it('step-level excludeHeaders combines with manifest-level', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'combined-exc-cap.req.yaml'), stringify({
+      request: {
+        method: 'POST', path: '/x',
+        headers: { 'x-global': 'a', 'x-local': 'b', 'x-keep': 'c' },
+        body: '{}',
+      },
+    }));
+
+    const manifest = {
+      target: url,
+      excludeHeaders: ['x-global'],
+      steps: [{
+        capture: './combined-exc-cap.req.yaml',
+        overrides: { excludeHeaders: ['x-local'] },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].headers['x-global'], undefined);
+    assert.equal(reqs[0].headers['x-local'], undefined);
+    assert.equal(reqs[0].headers['x-keep'], 'c');
+    await stopTarget(server);
+  });
+
+  it('excludeHeaders matching is case-insensitive', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'case-exc-cap.req.yaml'), stringify({
+      request: { method: 'POST', path: '/x', headers: { 'X-Custom-Header': 'value' }, body: '{}' },
+    }));
+
+    const manifest = {
+      target: url,
+      excludeHeaders: ['x-custom-header'],
+      steps: [{ capture: './case-exc-cap.req.yaml' }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].headers['x-custom-header'], undefined);
+    await stopTarget(server);
+  });
+
+  it('headers added via overrides.headers are NOT excluded', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'no-exc-override-cap.req.yaml'), stringify({
+      request: { method: 'POST', path: '/x', headers: { 'x-captured': 'drop-me' }, body: '{}' },
+    }));
+
+    const manifest = {
+      target: url,
+      excludeHeaders: ['x-captured'],
+      steps: [{
+        capture: './no-exc-override-cap.req.yaml',
+        overrides: { headers: { 'x-captured': 'injected' } },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].headers['x-captured'], 'injected');
+    await stopTarget(server);
+  });
+});
+
+// ─── content-length recalculation ────────────────────────────────────────────
+
+describe('runReplaySession — content-length recalculation', () => {
+  let dir;
+  before(() => { dir = mkdtempSync(join(tmpdir(), 'replay-clen-')); });
+  after(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it('content-length from capture is not forwarded — recalculated from actual body', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    const originalBody = '{"a":1}';
+    writeFileSync(join(dir, 'clen-cap.req.yaml'), stringify({
+      request: {
+        method: 'POST', path: '/x',
+        headers: { 'content-type': 'application/json', 'content-length': '9999' },
+        body: originalBody,
+      },
+    }));
+
+    const manifest = {
+      target: url,
+      steps: [{ capture: './clen-cap.req.yaml' }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    const actualLen = Buffer.byteLength(originalBody);
+    assert.equal(reqs[0].headers['content-length'], String(actualLen));
+    await stopTarget(server);
+  });
+
+  it('content-length recalculated after overrides.body changes body size', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'clen-override-cap.req.yaml'), stringify({
+      request: {
+        method: 'POST', path: '/x',
+        headers: { 'content-type': 'application/json', 'content-length': '7' },
+        body: '{"a":1}',
+      },
+    }));
+
+    const newBody = '{"a":1,"b":2,"c":3,"extra":"field"}';
+    const manifest = {
+      target: url,
+      steps: [{
+        capture: './clen-override-cap.req.yaml',
+        overrides: { body: newBody },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    const expected = Buffer.byteLength(JSON.stringify(JSON.parse(newBody)));
+    assert.equal(reqs[0].headers['content-length'], String(expected));
+    await stopTarget(server);
+  });
+
+  it('content-length recalculated after overrides.bodyPatch changes body size', async () => {
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end('ok'); });
+
+    writeFileSync(join(dir, 'clen-patch-cap.req.yaml'), stringify({
+      request: {
+        method: 'POST', path: '/x',
+        headers: { 'content-type': 'application/json', 'content-length': '7' },
+        body: '{"a":1}',
+      },
+    }));
+
+    const manifest = {
+      target: url,
+      steps: [{
+        capture: './clen-patch-cap.req.yaml',
+        overrides: { bodyPatch: { a: 'a-much-longer-replacement-value' } },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    const receivedBody = reqs[0].body.toString();
+    const expectedLen = Buffer.byteLength(receivedBody);
+    assert.equal(reqs[0].headers['content-length'], String(expectedLen));
+    await stopTarget(server);
+  });
+});

@@ -112,6 +112,7 @@ All string fields accept Nunjucks templates. `dotenv` vars, global `vars`, and f
 | `sendHostHeader` | Forward the original `Host` header from the capture — default: false (template-rendered) |
 | `dotenv` | List of `.env` file paths to import (relative to the manifest) |
 | `vars` | Global variables available as Nunjucks context in all steps |
+| `excludeHeaders` | List of header names (case-insensitive) to drop from every captured request before sending |
 
 ### Step fields
 
@@ -131,6 +132,7 @@ All string fields accept Nunjucks templates. `dotenv` vars, global `vars`, and f
 | `overrides.path` | Replace the captured path (template-rendered) |
 | `overrides.body` | Replace the entire body (template-rendered) |
 | `overrides.bodyPatch` | Patch specific fields of a JSON body via dot/bracket notation |
+| `overrides.excludeHeaders` | Additional header names (case-insensitive) to drop from this step's captured request |
 
 ---
 
@@ -324,6 +326,34 @@ Supported path syntax:
 - `arr[0].field` — field inside array element
 
 `bodyPatch` and `body` are mutually exclusive — if `body` is set, `bodyPatch` is ignored.
+
+### `overrides.excludeHeaders`
+
+Drops specific headers from the captured request before sending. Useful for removing internal or infrastructure headers that should not be forwarded.
+
+```yaml
+steps:
+  - capture: ./wa.req.yaml
+    overrides:
+      excludeHeaders:
+        - x-forwarded-for
+        - cf-ray
+```
+
+A global list can also be set at the manifest level under `excludeHeaders`, which applies to all steps. Per-step `overrides.excludeHeaders` **adds** to the global list (does not replace it).
+
+```yaml
+excludeHeaders:
+  - x-forwarded-for   # dropped from every step
+
+steps:
+  - capture: ./wa.req.yaml
+    overrides:
+      excludeHeaders:
+        - cf-ray       # dropped only from this step (in addition to the global list)
+```
+
+Header matching is case-insensitive. `content-length` is always recalculated from the final body and never needs to be listed here.
 
 ---
 

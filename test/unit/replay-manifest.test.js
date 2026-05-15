@@ -278,6 +278,67 @@ describe('loadManifest — dotenv validation', () => {
   });
 });
 
+describe('loadManifest — excludeHeaders validation', () => {
+  before(setup);
+  after(teardown);
+
+  it('accepts manifest without excludeHeaders', () => {
+    const p = write('no-exclude.yaml', {
+      target: 'http://x',
+      steps: [{ path: '/x', method: 'GET' }],
+    });
+    const { manifest } = loadManifest(p);
+    assert.equal(manifest.excludeHeaders, undefined);
+  });
+
+  it('accepts manifest with excludeHeaders as array', () => {
+    const p = write('exclude-array.yaml', {
+      target: 'http://x',
+      excludeHeaders: ['x-forwarded-for', 'cf-ray'],
+      steps: [{ path: '/x', method: 'GET' }],
+    });
+    const { manifest } = loadManifest(p);
+    assert.deepEqual(manifest.excludeHeaders, ['x-forwarded-for', 'cf-ray']);
+  });
+
+  it('throws ConfigError when excludeHeaders is not an array', () => {
+    const p = write('exclude-bad.yaml', {
+      target: 'http://x',
+      excludeHeaders: 'x-forwarded-for',
+      steps: [{ path: '/x', method: 'GET' }],
+    });
+    assert.throws(() => loadManifest(p), /excludeHeaders.*array/i);
+  });
+
+  it('accepts step with overrides.excludeHeaders as array', () => {
+    const p = join(tmpDir, 'step-exclude-ok.yaml');
+    writeFileSync(p, [
+      'target: http://x',
+      'steps:',
+      '  - path: /x',
+      '    method: GET',
+      '    overrides:',
+      '      excludeHeaders:',
+      '        - x-internal',
+    ].join('\n'));
+    const { manifest } = loadManifest(p);
+    assert.deepEqual(manifest.steps[0].overrides.excludeHeaders, ['x-internal']);
+  });
+
+  it('throws ConfigError when step overrides.excludeHeaders is not an array', () => {
+    const p = join(tmpDir, 'step-exclude-bad.yaml');
+    writeFileSync(p, [
+      'target: http://x',
+      'steps:',
+      '  - path: /x',
+      '    method: GET',
+      '    overrides:',
+      '      excludeHeaders: x-internal',
+    ].join('\n'));
+    assert.throws(() => loadManifest(p), /overrides\.excludeHeaders.*array/i);
+  });
+});
+
 describe('loadManifest — mixed capture and inline steps', () => {
   before(setup);
   after(teardown);

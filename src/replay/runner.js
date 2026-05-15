@@ -42,6 +42,7 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
   const warmupMs = opts.warmupMs ?? _renderInt(manifest.warmupMs ?? manifest.warmup ?? 0, manifestCtx);
   const sendHostHeader = opts.sendHostHeader ?? _renderBool(manifest.sendHostHeader ?? false, manifestCtx);
   const dryRun = opts.dryRun ?? false;
+  const manifestExcludeHeaders = (manifest.excludeHeaders ?? []).map(h => h.toLowerCase());
   const onStep = opts.onStep ?? null;
 
   console.log(styleText('cyan', `Replay: ${manifest.steps.length} steps → ${target}`));
@@ -64,6 +65,9 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
       // Step vars re-resolve each iteration; they can reference global vars and dotenv vars
       const stepVars = resolveVars(step.vars, { ...dotenvVars, ...globalVars });
       const context = { ...dotenvVars, ...globalVars, ...stepVars };
+
+      const stepExcludeHeaders = (step.overrides?.excludeHeaders ?? []).map(h => h.toLowerCase());
+      const excludeSet = new Set([...manifestExcludeHeaders, ...stepExcludeHeaders]);
 
       if (isWs) {
         // ── WebSocket step ──────────────────────────────────────────────────
@@ -97,10 +101,11 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
         // Build headers — optionally strip Host and WS handshake headers
         const headers = {};
         for (const [k, v] of Object.entries(wsData.headers ?? {})) {
-          if (k.toLowerCase() === 'host' && !sendHostHeader) continue;
           const kl = k.toLowerCase();
+          if (kl === 'host' && !sendHostHeader) continue;
           if (['upgrade', 'connection', 'sec-websocket-key', 'sec-websocket-version',
                'sec-websocket-extensions', 'sec-websocket-protocol'].includes(kl)) continue;
+          if (excludeSet.has(kl)) continue;
           headers[k] = Array.isArray(v) ? v[0] : String(v);
         }
         if (step.overrides?.headers) {
@@ -152,10 +157,13 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
           reqData.path = renderString(step.overrides.path, context);
         }
 
-        // Build headers — optionally strip Host
+        // Build headers — optionally strip Host; never carry content-length from capture (always recalculated)
         const headers = {};
         for (const [k, v] of Object.entries(reqData.headers ?? {})) {
-          if (k.toLowerCase() === 'host' && !sendHostHeader) continue;
+          const kl = k.toLowerCase();
+          if (kl === 'host' && !sendHostHeader) continue;
+          if (kl === 'content-length') continue;
+          if (excludeSet.has(kl)) continue;
           headers[k] = Array.isArray(v) ? v[0] : String(v);
         }
         if (step.overrides?.headers) {

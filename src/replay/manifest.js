@@ -49,6 +49,10 @@ export function loadManifest(manifestPath) {
     throw new ConfigError('Manifest "dotenv" must be an array of file paths');
   }
 
+  if (manifest.excludeHeaders != null && !Array.isArray(manifest.excludeHeaders)) {
+    throw new ConfigError('Manifest "excludeHeaders" must be an array of header names');
+  }
+
   const manifestDir = dirname(absPath);
   return { manifest, manifestDir };
 }
@@ -96,6 +100,10 @@ export function loadDotEnvFiles(dotenvList, manifestDir) {
 function _validateStep(step, idx) {
   const isCapture = !!(step.capture ?? step.request);
   const isWs = step.type === 'ws';
+
+  if (step.overrides?.excludeHeaders != null && !Array.isArray(step.overrides.excludeHeaders)) {
+    throw new ConfigError(`Step ${idx + 1}: "overrides.excludeHeaders" must be an array of header names`);
+  }
 
   if (isCapture) return;
 
