@@ -22,6 +22,7 @@
   "license": "MIT",
   "dependencies": {
     "@faker-js/faker": "^10.4.0",
-    "nunjucks": "^3.2.4"
+    "nunjucks": "^3.2.4",
+    "yaml": "^2.9.0"
   }
 }

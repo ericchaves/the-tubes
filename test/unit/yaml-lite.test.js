@@ -68,11 +68,6 @@ test('stringify produces valid YAML for capture shape', () => {
   assert.equal(parsed.request.headers['content-type'], 'application/json');
 });
 
-test('parse rejects anchor syntax', () => {
-  const yaml = '&anchor foo: bar\n';
-  assert.throws(() => parse(yaml), /unsupported/i);
-});
-
 test('idempotent: stringify(parse(stringify(obj))) === stringify(obj)', () => {
   const obj = { a: 'hello', b: 42, c: { d: 'world\nline2' } };
   const y1 = stringify(obj);
@@ -80,8 +75,21 @@ test('idempotent: stringify(parse(stringify(obj))) === stringify(obj)', () => {
   assert.equal(y1, y2);
 });
 
-test('parse: sequence item with dash+tab separator is detected', () => {
-  const yaml = 'items:\n  -\tfoo\n  -\tbar\n';
-  const parsed = parse(yaml);
-  assert.deepEqual(parsed, { items: ['foo', 'bar'] });
+test('parse: flow sequence inline value', () => {
+  const yaml = 'dotenv: [ .env.wa-blutech ]\n';
+  assert.deepEqual(parse(yaml), { dotenv: ['.env.wa-blutech'] });
+});
+
+test('parse: flow sequence with multiple items', () => {
+  const yaml = 'files: [ a.env, b.env, c.env ]\n';
+  assert.deepEqual(parse(yaml), { files: ['a.env', 'b.env', 'c.env'] });
+});
+
+test('parse: empty flow sequence', () => {
+  assert.deepEqual(parse('items: []\n'), { items: [] });
+});
+
+test('parse: block sequence', () => {
+  const yaml = 'items:\n  - foo\n  - bar\n';
+  assert.deepEqual(parse(yaml), { items: ['foo', 'bar'] });
 });

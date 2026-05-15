@@ -14,6 +14,9 @@ importers:
       nunjucks:
         specifier: ^3.2.4
         version: 3.2.4
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
 
 packages:
 
@@ -41,6 +44,11 @@ packages:
       chokidar:
         optional: true
 
+  yaml@2.9.0:
+    resolution: {integrity: sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==}
+    engines: {node: '>= 14.6'}
+    hasBin: true
+
 snapshots:
 
   '@faker-js/faker@10.4.0': {}
@@ -56,3 +64,5 @@ snapshots:
       a-sync-waterfall: 1.0.1
       asap: 2.0.6
       commander: 5.1.0
+
+  yaml@2.9.0: {}

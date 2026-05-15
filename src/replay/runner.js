@@ -45,8 +45,53 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
   const manifestExcludeHeaders = (manifest.excludeHeaders ?? []).map(h => h.toLowerCase());
   const onStep = opts.onStep ?? null;
 
+  // Dry-run: validate template rendering for all steps, no output on success, errors to stderr + exit 1
+  if (dryRun) {
+    const errors = [];
+    for (const [stepIdx, step] of manifest.steps.entries()) {
+      const stepVars = resolveVars(step.vars, { ...dotenvVars, ...globalVars });
+      const context = { ...dotenvVars, ...globalVars, ...stepVars };
+      const label = `Step ${stepIdx + 1}`;
+      try {
+        const isWs = step.type === 'ws';
+        const isInline = !(step.capture ?? step.request);
+        if (isWs) {
+          if (!isInline) {
+            const capturePath = resolve(manifestDir, renderString(step.capture ?? step.request, context));
+            loadCaptureWs(capturePath);
+          } else {
+            renderDeep({ path: step.path ?? '/', headers: step.headers ?? {}, frames: step.frames ?? [] }, context);
+          }
+          if (step.overrides?.path) renderString(step.overrides.path, context);
+          if (step.overrides?.headers) renderDeep(step.overrides.headers, context);
+        } else {
+          let reqData;
+          if (isInline) {
+            reqData = renderDeep({ method: step.method ?? 'POST', path: step.path ?? '/', headers: step.headers ?? {}, body: step.body }, context);
+          } else {
+            const capturePath = resolve(manifestDir, renderString(step.capture ?? step.request, context));
+            reqData = loadCaptureRequest(capturePath);
+          }
+          if (step.overrides?.path) renderString(step.overrides.path, context);
+          if (step.overrides?.headers) renderDeep(step.overrides.headers, context);
+          if (step.overrides?.body != null) {
+            renderString(String(step.overrides.body), context);
+          } else if (step.overrides?.bodyPatch) {
+            applyBodyPatch(String(reqData.body ?? '{}'), step.overrides.bodyPatch, context);
+          }
+        }
+      } catch (err) {
+        errors.push(`${label}: ${err.message}`);
+      }
+    }
+    if (errors.length > 0) {
+      for (const e of errors) process.stderr.write(e + '\n');
+      process.exit(1);
+    }
+    return;
+  }
+
   console.log(styleText('cyan', `Replay: ${manifest.steps.length} steps → ${target}`));
-  if (dryRun) console.log(styleText('yellow', '  DRY RUN — no requests will be sent'));
   console.log(`  loops: ${loop}  loop-pause: ${loopPauseMs}ms  warmup: ${warmupMs}ms`);
 
   if (warmupMs > 0) {
@@ -112,24 +157,19 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
           Object.assign(headers, renderDeep(step.overrides.headers, context));
         }
 
-        if (dryRun) {
-          const clientCount = (wsData.frames ?? []).filter(f => f.dir === 'client').length;
-          console.log(`  [${stepIdx + 1}] DRY WS → ${finalUrl} (${clientCount} frames)`);
-        } else {
-          process.stdout.write(`  [${stepIdx + 1}] WS ${finalUrl} ... `);
-          const t0 = Date.now();
-          try {
-            await wsSend(finalUrl, wsData.frames ?? [], headers);
-            const durationMs = Date.now() - t0;
-            console.log(styleText('green', '101'));
-            debug('step %d → ws 101', stepIdx + 1);
-            onStep?.({ stepIdx, total, method: 'WS', url: finalUrl, status: 101, durationMs, error: null });
-          } catch (err) {
-            const durationMs = Date.now() - t0;
-            console.log(styleText('red', `ERROR: ${err.message}`));
-            debug('step %d ws error: %s', stepIdx + 1, err.message);
-            onStep?.({ stepIdx, total, method: 'WS', url: finalUrl, status: null, durationMs, error: err.message });
-          }
+        process.stdout.write(`  [${stepIdx + 1}] WS ${finalUrl} ... `);
+        const t0ws = Date.now();
+        try {
+          await wsSend(finalUrl, wsData.frames ?? [], headers);
+          const durationMs = Date.now() - t0ws;
+          console.log(styleText('green', '101'));
+          debug('step %d → ws 101', stepIdx + 1);
+          onStep?.({ stepIdx, total, method: 'WS', url: finalUrl, status: 101, durationMs, error: null });
+        } catch (err) {
+          const durationMs = Date.now() - t0ws;
+          console.log(styleText('red', `ERROR: ${err.message}`));
+          debug('step %d ws error: %s', stepIdx + 1, err.message);
+          onStep?.({ stepIdx, total, method: 'WS', url: finalUrl, status: null, durationMs, error: err.message });
         }
       } else {
         // ── HTTP step ───────────────────────────────────────────────────────
@@ -211,24 +251,19 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
         // GET and HEAD must not carry a body
         const reqBody = (method === 'GET' || method === 'HEAD') ? undefined : (body || undefined);
 
-        if (dryRun) {
-          console.log(`  [${stepIdx + 1}] DRY ${method} → ${finalUrl}`);
-          if (reqBody) console.log(`    body: ${String(reqBody).slice(0, 80)}...`);
-        } else {
-          process.stdout.write(`  [${stepIdx + 1}] ${method} ${finalUrl} ... `);
-          const t0 = Date.now();
-          try {
-            const status = await httpSend(finalUrl, method, headers, reqBody);
-            const durationMs = Date.now() - t0;
-            console.log(styleText(status < 400 ? 'green' : 'yellow', `${status}`));
-            debug('step %d → %d', stepIdx + 1, status);
-            onStep?.({ stepIdx, total, method, url: finalUrl, status, durationMs, error: null });
-          } catch (err) {
-            const durationMs = Date.now() - t0;
-            console.log(styleText('red', `ERROR: ${err.message}`));
-            debug('step %d error: %s', stepIdx + 1, err.message);
-            onStep?.({ stepIdx, total, method, url: finalUrl, status: null, durationMs, error: err.message });
-          }
+        process.stdout.write(`  [${stepIdx + 1}] ${method} ${finalUrl} ... `);
+        const t0 = Date.now();
+        try {
+          const status = await httpSend(finalUrl, method, headers, reqBody);
+          const durationMs = Date.now() - t0;
+          console.log(styleText(status < 400 ? 'green' : 'yellow', `${status}`));
+          debug('step %d → %d', stepIdx + 1, status);
+          onStep?.({ stepIdx, total, method, url: finalUrl, status, durationMs, error: null });
+        } catch (err) {
+          const durationMs = Date.now() - t0;
+          console.log(styleText('red', `ERROR: ${err.message}`));
+          debug('step %d error: %s', stepIdx + 1, err.message);
+          onStep?.({ stepIdx, total, method, url: finalUrl, status: null, durationMs, error: err.message });
         }
       }
 
