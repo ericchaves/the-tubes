@@ -1146,6 +1146,160 @@ describe('runReplaySession — excludeHeaders', () => {
   });
 });
 
+// ─── verbose output ───────────────────────────────────────────────────────────
+
+describe('runReplaySession — verbose output', () => {
+  let dir;
+  before(() => { dir = mkdtempSync(join(tmpdir(), 'replay-verbose-')); });
+  after(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  function collectOutput() {
+    const lines = [];
+    const log = (...args) => lines.push(args.map(a => String(a)).join(' '));
+    const write = (data) => { lines.push(String(data)); return true; };
+    const getOutput = () => lines.join('\n');
+    return { log, write, getOutput };
+  }
+
+  it('verbose=0 (default) does not print response body', async () => {
+    const { server, url } = await startTarget((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"status":"ok"}');
+    });
+
+    const { log, write, getOutput } = collectOutput();
+    const manifest = { target: url, steps: [{ method: 'GET', path: '/ping' }] };
+    await runReplaySession(manifest, dir, { verbose: 0, log, write });
+    const out = getOutput();
+
+    assert.ok(!out.includes('"status"'), `expected no body in output, got: ${out}`);
+    await stopTarget(server);
+  });
+
+  it('verbose=1 prints response body', async () => {
+    const { server, url } = await startTarget((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"status":"ok"}');
+    });
+
+    const { log, write, getOutput } = collectOutput();
+    const manifest = { target: url, steps: [{ method: 'GET', path: '/ping' }] };
+    await runReplaySession(manifest, dir, { verbose: 1, log, write });
+    const out = getOutput();
+
+    assert.ok(out.includes('"status"'), `expected body in output, got: ${out}`);
+    assert.ok(!out.includes('content-type:'), `expected no headers in verbose=1, got: ${out}`);
+    await stopTarget(server);
+  });
+
+  it('verbose=1 pretty-prints JSON response body', async () => {
+    const { server, url } = await startTarget((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{"a":1,"b":2}');
+    });
+
+    const { log, write, getOutput } = collectOutput();
+    const manifest = { target: url, steps: [{ method: 'GET', path: '/ping' }] };
+    await runReplaySession(manifest, dir, { verbose: 1, log, write });
+    const out = getOutput();
+
+    assert.ok(out.includes('"a": 1'), `expected pretty-printed JSON, got: ${out}`);
+    await stopTarget(server);
+  });
+
+  it('verbose=2 prints response headers and body', async () => {
+    const { server, url } = await startTarget((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json', 'x-custom': 'hello' });
+      res.end('{"status":"ok"}');
+    });
+
+    const { log, write, getOutput } = collectOutput();
+    const manifest = { target: url, steps: [{ method: 'GET', path: '/ping' }] };
+    await runReplaySession(manifest, dir, { verbose: 2, log, write });
+    const out = getOutput();
+
+    assert.ok(out.includes('content-type:'), `expected content-type header, got: ${out}`);
+    assert.ok(out.includes('x-custom:'), `expected x-custom header, got: ${out}`);
+    assert.ok(out.includes('"status"'), `expected body, got: ${out}`);
+    assert.ok(out.includes('response'), `expected response section label, got: ${out}`);
+    await stopTarget(server);
+  });
+
+  it('verbose=3 prints request and response', async () => {
+    const { server, url } = await startTarget((req, res) => {
+      res.writeHead(201, { 'content-type': 'application/json' });
+      res.end('{"created":true}');
+    });
+
+    const { log, write, getOutput } = collectOutput();
+    const manifest = {
+      target: url,
+      steps: [{
+        method: 'POST',
+        path: '/items',
+        headers: { 'content-type': 'application/json', 'x-trace': 'abc' },
+        body: '{"name":"test"}',
+      }],
+    };
+    await runReplaySession(manifest, dir, { verbose: 3, log, write });
+    const out = getOutput();
+
+    assert.ok(out.includes('request'), `expected request section label, got: ${out}`);
+    assert.ok(out.includes('POST /items'), `expected request line, got: ${out}`);
+    assert.ok(out.includes('x-trace:'), `expected request header, got: ${out}`);
+    assert.ok(out.includes('response'), `expected response section label, got: ${out}`);
+    assert.ok(out.includes('"created"'), `expected response body, got: ${out}`);
+    await stopTarget(server);
+  });
+
+  it('verbose=1 prints plain text body as-is', async () => {
+    const { server, url } = await startTarget((req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end('hello world');
+    });
+
+    const { log, write, getOutput } = collectOutput();
+    const manifest = { target: url, steps: [{ method: 'GET', path: '/ping' }] };
+    await runReplaySession(manifest, dir, { verbose: 1, log, write });
+    const out = getOutput();
+
+    assert.ok(out.includes('hello world'), `expected plain text body, got: ${out}`);
+    await stopTarget(server);
+  });
+
+  it('verbose=1 shows [binary N bytes] for non-text responses', async () => {
+    const { server, url } = await startTarget((req, res) => {
+      res.writeHead(200, { 'content-type': 'application/octet-stream' });
+      res.end(Buffer.from([0x00, 0x01, 0x02, 0x03]));
+    });
+
+    const { log, write, getOutput } = collectOutput();
+    const manifest = { target: url, steps: [{ method: 'GET', path: '/bin' }] };
+    await runReplaySession(manifest, dir, { verbose: 1, log, write });
+    const out = getOutput();
+
+    assert.ok(out.includes('[binary'), `expected binary label, got: ${out}`);
+    assert.ok(out.includes('bytes]'), `expected byte count, got: ${out}`);
+    await stopTarget(server);
+  });
+
+  it('verbose=1 prints nothing for empty response body', async () => {
+    const { server, url } = await startTarget((req, res) => {
+      res.writeHead(204);
+      res.end();
+    });
+
+    const { log, write, getOutput } = collectOutput();
+    const manifest = { target: url, steps: [{ method: 'DELETE', path: '/item/1' }] };
+    await runReplaySession(manifest, dir, { verbose: 1, log, write });
+    const out = getOutput();
+
+    assert.ok(!out.includes('┌─'), `expected no response section box, got: ${out}`);
+    assert.ok(!out.includes('[binary'), `expected no binary label, got: ${out}`);
+    await stopTarget(server);
+  });
+});
+
 // ─── content-length recalculation ────────────────────────────────────────────
 
 describe('runReplaySession — content-length recalculation', () => {

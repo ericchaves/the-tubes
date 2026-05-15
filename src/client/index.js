@@ -74,32 +74,11 @@ export async function runExpose(config) {
       getTunnel: () => tunnel,
       debugManager,
       onReplay: async (manifest, manifestDir, name) => {
-        // Derive an internal target URL so the replay can reach the tunnel server
-        // from inside a container. The manifest target (e.g. http://demo.tt.localhost:8080)
-        // may not be DNS-resolvable inside Docker, but tunnelHost (e.g. tt-server) always is.
-        // Replacing the hostname routes requests through the server, which the tunnel
-        // cluster forwards to the local service — triggering captures exactly like
-        // `task replay -- --target-url http://tt-server:8080 --send-host-header`.
-        let targetUrl;
-        let sendHostHeader = false;
-        const info = tunnel.info;
-        if (info?.publicUrl && info?.tunnelHost) {
-          try {
-            const u = new URL(info.publicUrl);
-            u.hostname = info.tunnelHost;
-            targetUrl = u.origin; // scheme://tunnelHost:port
-            sendHostHeader = true;
-          } catch { /* leave targetUrl undefined → fall back to manifest.target */ }
-        }
-
         const total = manifest.steps.length;
-        const effectiveTarget = targetUrl ?? manifest.target;
-        adminLog.push('replay.started', { manifest: name, steps: total, target: effectiveTarget });
+        adminLog.push('replay.started', { manifest: name, steps: total, target: manifest.target });
         const t0 = Date.now();
         try {
           await runReplaySession(manifest, manifestDir, {
-            targetUrl,
-            sendHostHeader,
             onStep({ stepIdx, total: tot, method, url, status, durationMs, error }) {
               if (error) {
                 adminLog.push('replay.step.error', { manifest: name, stepIndex: stepIdx, total: tot, method, url, error });

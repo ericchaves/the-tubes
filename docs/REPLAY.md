@@ -19,6 +19,9 @@ tt replay --manifest <path> [options]
 | `--warmup-ms` | — | from manifest / 0 | Wait before starting (ms) |
 | `--send-host-header` | — | false | Include the original `Host:` header from the capture |
 | `--dry-run` | — | false | Print what would be sent, without sending |
+| `-v` | `TT_REPLAY_VERBOSE=1` | — | Print response body per step |
+| `-vv` | `TT_REPLAY_VERBOSE=2` | — | Print full HTTP response (status line + headers + body) |
+| `-vvv` | `TT_REPLAY_VERBOSE=3` | — | Print full HTTP request and response |
 
 ## Capture Format
 
@@ -422,6 +425,60 @@ tt replay \
 ```bash
 tt replay --manifest flows/onboarding.yaml --dry-run
 ```
+
+### Verbose output
+
+Use `-v`, `-vv`, or `-vvv` to inspect responses (and requests) as they happen.
+
+**`-v` — response body only**
+
+```
+  [1] POST http://localhost:3000/webhook ... 200
+  {
+    "status": "accepted",
+    "id": "evt_123"
+  }
+```
+
+**`-vv` — full HTTP response (status line + headers + body)**
+
+```
+  [1] POST http://localhost:3000/webhook ... 200
+  ┌─ response
+  │ HTTP/1.1 200
+  │ content-type: application/json
+  │ x-request-id: req_abc
+  │
+  │ {
+  │   "status": "accepted",
+  │   "id": "evt_123"
+  │ }
+  └─
+```
+
+**`-vvv` — full HTTP request and response**
+
+```
+  ┌─ request
+  │ POST /webhook HTTP/1.1
+  │ content-type: application/json
+  │ x-hub-signature-256: sha256=...
+  │
+  │ {
+  │   "object": "whatsapp_business_account",
+  │   "entry": [...]
+  │ }
+  └─
+  [1] POST http://localhost:3000/webhook ... 200
+  ┌─ response
+  │ HTTP/1.1 200
+  │ content-type: application/json
+  │
+  │ {"status":"accepted"}
+  └─
+```
+
+JSON bodies are pretty-printed automatically. Binary bodies (e.g. `application/octet-stream`) show `[binary N bytes]`. Response bodies are capped at 64 KB to avoid blocking on large payloads.
 
 ### Loop 10 times — load test with unique data per iteration
 

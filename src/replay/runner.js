@@ -42,6 +42,9 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
   const warmupMs = opts.warmupMs ?? _renderInt(manifest.warmupMs ?? manifest.warmup ?? 0, manifestCtx);
   const sendHostHeader = opts.sendHostHeader ?? _renderBool(manifest.sendHostHeader ?? false, manifestCtx);
   const dryRun = opts.dryRun ?? false;
+  const verbose = opts.verbose ?? 0;
+  const log = opts.log ?? console.log.bind(console);
+  const write = opts.write ?? process.stdout.write.bind(process.stdout);
   const manifestExcludeHeaders = (manifest.excludeHeaders ?? []).map(h => h.toLowerCase());
   const onStep = opts.onStep ?? null;
 
@@ -91,8 +94,8 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
     return;
   }
 
-  console.log(styleText('cyan', `Replay: ${manifest.steps.length} steps → ${target}`));
-  console.log(`  loops: ${loop}  loop-pause: ${loopPauseMs}ms  warmup: ${warmupMs}ms`);
+  log(styleText('cyan', `Replay: ${manifest.steps.length} steps → ${target}`));
+  log(`  loops: ${loop}  loop-pause: ${loopPauseMs}ms  warmup: ${warmupMs}ms`);
 
   if (warmupMs > 0) {
     debug('warmup %dms', warmupMs);
@@ -100,7 +103,7 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
   }
 
   for (let loopIdx = 0; loopIdx < loop; loopIdx++) {
-    if (loop > 1) console.log(`\n── Loop ${loopIdx + 1}/${loop} ──`);
+    if (loop > 1) log(`\n── Loop ${loopIdx + 1}/${loop} ──`);
 
     for (const [stepIdx, step] of manifest.steps.entries()) {
       const total = manifest.steps.length;
@@ -157,17 +160,17 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
           Object.assign(headers, renderDeep(step.overrides.headers, context));
         }
 
-        process.stdout.write(`  [${stepIdx + 1}] WS ${finalUrl} ... `);
+        write(`  [${stepIdx + 1}] WS ${finalUrl} ... `);
         const t0ws = Date.now();
         try {
           await wsSend(finalUrl, wsData.frames ?? [], headers);
           const durationMs = Date.now() - t0ws;
-          console.log(styleText('green', '101'));
+          log(styleText('green', '101'));
           debug('step %d → ws 101', stepIdx + 1);
           onStep?.({ stepIdx, total, method: 'WS', url: finalUrl, status: 101, durationMs, error: null });
         } catch (err) {
           const durationMs = Date.now() - t0ws;
-          console.log(styleText('red', `ERROR: ${err.message}`));
+          log(styleText('red', `ERROR: ${err.message}`));
           debug('step %d ws error: %s', stepIdx + 1, err.message);
           onStep?.({ stepIdx, total, method: 'WS', url: finalUrl, status: null, durationMs, error: err.message });
         }
@@ -251,17 +254,22 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
         // GET and HEAD must not carry a body
         const reqBody = (method === 'GET' || method === 'HEAD') ? undefined : (body || undefined);
 
-        process.stdout.write(`  [${stepIdx + 1}] ${method} ${finalUrl} ... `);
+        if (verbose >= 3) {
+          _printRequest(method, finalUrl, headers, reqBody, log);
+        }
+
+        write(`  [${stepIdx + 1}] ${method} ${finalUrl} ... `);
         const t0 = Date.now();
         try {
-          const status = await httpSend(finalUrl, method, headers, reqBody);
+          const { status, headers: resHeaders, body: resBody } = await httpSend(finalUrl, method, headers, reqBody, verbose >= 1);
           const durationMs = Date.now() - t0;
-          console.log(styleText(status < 400 ? 'green' : 'yellow', `${status}`));
+          log(styleText(status < 400 ? 'green' : 'yellow', `${status}`));
+          if (verbose >= 1) _printResponse(status, resHeaders, resBody, verbose, log);
           debug('step %d → %d', stepIdx + 1, status);
           onStep?.({ stepIdx, total, method, url: finalUrl, status, durationMs, error: null });
         } catch (err) {
           const durationMs = Date.now() - t0;
-          console.log(styleText('red', `ERROR: ${err.message}`));
+          log(styleText('red', `ERROR: ${err.message}`));
           debug('step %d error: %s', stepIdx + 1, err.message);
           onStep?.({ stepIdx, total, method, url: finalUrl, status: null, durationMs, error: err.message });
         }
@@ -280,7 +288,7 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
     }
   }
 
-  console.log(styleText('green', '\nReplay completed.'));
+  log(styleText('green', '\nReplay completed.'));
 }
 
 function sleep(ms) {
@@ -427,13 +435,16 @@ function _encodeWsFrame(opcode, payload) {
   return frame;
 }
 
+const VERBOSE_BODY_LIMIT = 64 * 1024; // 64 KB
+
 /**
  * Send an HTTP/HTTPS request using node:http/https so that all headers
  * (including Host) are sent verbatim — fetch/undici silently overrides Host.
  *
- * @returns {Promise<number>} HTTP status code
+ * @param {boolean} [captureResponse] - buffer response headers and body
+ * @returns {Promise<{ status: number, headers?: object, body?: Buffer }>}
  */
-function httpSend(url, method, headers, body) {
+function httpSend(url, method, headers, body, captureResponse = false) {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
     const isHttps = urlObj.protocol === 'https:';
@@ -449,12 +460,73 @@ function httpSend(url, method, headers, body) {
       method,
       headers,
     }, (res) => {
-      res.resume();
-      resolve(res.statusCode);
+      if (!captureResponse) {
+        res.resume();
+        resolve({ status: res.statusCode });
+        return;
+      }
+      const chunks = [];
+      let size = 0;
+      res.on('data', (chunk) => {
+        if (size < VERBOSE_BODY_LIMIT) chunks.push(chunk);
+        size += chunk.length;
+      });
+      res.on('end', () => resolve({
+        status: res.statusCode,
+        headers: res.headers,
+        body: chunks.length ? Buffer.concat(chunks) : Buffer.alloc(0),
+        truncated: size > VERBOSE_BODY_LIMIT,
+      }));
     });
 
     req.on('error', reject);
     if (bodyBuf) req.write(bodyBuf);
     req.end();
   });
+}
+
+function _printRequest(method, url, headers, body, log) {
+  const urlObj = new URL(url);
+  const lines = [`${method} ${urlObj.pathname}${urlObj.search} HTTP/1.1`];
+  for (const [k, v] of Object.entries(headers)) lines.push(`${k}: ${v}`);
+  log(styleText('dim', '\n  ┌─ request'));
+  for (const l of lines) log(styleText('dim', `  │ ${l}`));
+  if (body != null) {
+    const buf = Buffer.isBuffer(body) ? body : Buffer.from(String(body));
+    log(styleText('dim', '  │'));
+    _printBody(buf, false, '  │ ', log);
+  }
+  log(styleText('dim', '  └─'));
+}
+
+function _printResponse(status, resHeaders, resBody, verbose, log) {
+  if (verbose >= 2) {
+    log(styleText('dim', '  ┌─ response'));
+    log(styleText('dim', `  │ HTTP/1.1 ${status}`));
+    for (const [k, v] of Object.entries(resHeaders ?? {})) {
+      log(styleText('dim', `  │ ${k}: ${Array.isArray(v) ? v.join(', ') : v}`));
+    }
+    log(styleText('dim', '  │'));
+    _printBody(resBody, resHeaders, '  │ ', log);
+    log(styleText('dim', '  └─'));
+  } else {
+    // -v: just body
+    _printBody(resBody, resHeaders, '  ', log);
+  }
+}
+
+function _printBody(buf, headers, prefix, log) {
+  if (!buf || buf.length === 0) return;
+  const ct = (typeof headers === 'object' && headers?.['content-type']) ?? '';
+  const isText = !ct || /text|json|xml|html|yaml|plain|form/.test(ct);
+  if (isText) {
+    const text = buf.toString('utf8');
+    let display = text;
+    if (/json/.test(ct) || (text.trimStart().startsWith('{') || text.trimStart().startsWith('['))) {
+      try { display = JSON.stringify(JSON.parse(text), null, 2); } catch { /* leave as-is */ }
+    }
+    for (const line of display.split('\n')) log(`${prefix}${line}`);
+  } else {
+    log(`${prefix}[binary ${buf.length} bytes]`);
+  }
 }

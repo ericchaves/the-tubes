@@ -159,5 +159,6 @@ export function buildReplayConfig(env = process.env) {
     warmupMs: _int(env.TT_REPLAY_WARMUP_MS, null),
     sendHostHeader: _bool(env.TT_REPLAY_SEND_HOST_HEADER, false),
     dryRun: _bool(env.TT_REPLAY_DRY_RUN, false),
+    verbose: _int(env.TT_REPLAY_VERBOSE, 0),
   };
 }

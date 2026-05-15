@@ -93,6 +93,9 @@ tt replay — replay captured HTTP requests against a webhook
   --warmup-ms <n>                Delay before starting
   --send-host-header             Include original Host header from capture
   --dry-run                      Print what would be sent without sending
+  -v                             Print response status and body
+  -vv                            Print full HTTP response (headers + body)
+  -vvv                           Print full HTTP request and response
 
 Manifest format: see docs/REPLAY.md
 `.trim();
@@ -233,6 +236,9 @@ const REPLAY_FLAGS = {
   '--warmup-ms': 'TT_REPLAY_WARMUP_MS',
   '--send-host-header': 'TT_REPLAY_SEND_HOST_HEADER',
   '--dry-run': 'TT_REPLAY_DRY_RUN',
+  '-v':   ['TT_REPLAY_VERBOSE', '1'],
+  '-vv':  ['TT_REPLAY_VERBOSE', '2'],
+  '-vvv': ['TT_REPLAY_VERBOSE', '3'],
 };
 
 const FLAG_MAPS = { serve: SERVE_FLAGS, expose: EXPOSE_FLAGS, replay: REPLAY_FLAGS };

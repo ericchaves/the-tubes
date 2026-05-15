@@ -20,5 +20,6 @@ export async function runReplay(config) {
     loop: config.loop,
     loopPauseMs: config.loopPauseMs,
     warmupMs: config.warmupMs,
+    verbose: config.verbose,
   });
 }
