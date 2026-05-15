@@ -152,7 +152,7 @@ function _parseBlock(lines, startLine, indent) {
     }
 
     // Sequence item
-    if (trimmed.startsWith('- ') || trimmed === '-') {
+    if (/^-(?:[ \t]|$)/.test(trimmed)) {
       return _parseSequence(lines, startLine, indent);
     }
 

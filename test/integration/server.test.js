@@ -145,11 +145,11 @@ describe('POST /api/tunnels — tunnel creation', () => {
     assert.equal(body.tunnelId, 'my-webhook');
   });
 
-  it('rejects invalid subdomain format (403)', async () => {
+  it('rejects invalid subdomain format (400)', async () => {
     const { status, body } = await ctx.request('POST', '/api/tunnels/UPPERCASE-INVALID', {
       'X-TT-Session-Token': 'token-invalid-sub',
     });
-    assert.equal(status, 403);
+    assert.equal(status, 400);
     assert.ok(body.error);
   });
 

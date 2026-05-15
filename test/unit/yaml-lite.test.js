@@ -79,3 +79,9 @@ test('idempotent: stringify(parse(stringify(obj))) === stringify(obj)', () => {
   const y2 = stringify(parse(y1));
   assert.equal(y1, y2);
 });
+
+test('parse: sequence item with dash+tab separator is detected', () => {
+  const yaml = 'items:\n  -\tfoo\n  -\tbar\n';
+  const parsed = parse(yaml);
+  assert.deepEqual(parsed, { items: ['foo', 'bar'] });
+});

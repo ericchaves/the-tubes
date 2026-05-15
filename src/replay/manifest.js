@@ -45,8 +45,52 @@ export function loadManifest(manifestPath) {
     _validateStep(step, i);
   }
 
+  if (manifest.dotenv != null && !Array.isArray(manifest.dotenv)) {
+    throw new ConfigError('Manifest "dotenv" must be an array of file paths');
+  }
+
   const manifestDir = dirname(absPath);
   return { manifest, manifestDir };
+}
+
+/**
+ * Load and merge a list of .env files into a plain object.
+ * Later files override earlier ones on key collision.
+ *
+ * @param {string[]} dotenvList - paths relative to manifestDir
+ * @param {string} manifestDir
+ * @returns {object} merged key→value pairs
+ */
+export function loadDotEnvFiles(dotenvList, manifestDir) {
+  if (!dotenvList?.length) return {};
+  const result = {};
+  for (const relPath of dotenvList) {
+    const absPath = resolve(manifestDir, relPath);
+    if (!existsSync(absPath)) {
+      throw new ConfigError(`.env file not found: ${absPath}`);
+    }
+    let text;
+    try {
+      text = readFileSync(absPath, 'utf8');
+    } catch (err) {
+      throw new ConfigError(`Failed to read .env file "${absPath}": ${err.message}`);
+    }
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eqIdx = trimmed.indexOf('=');
+      if (eqIdx === -1) continue;
+      const key = trimmed.slice(0, eqIdx).trim();
+      if (!key) continue;
+      let value = trimmed.slice(eqIdx + 1).trim();
+      if ((value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      result[key] = value;
+    }
+  }
+  return result;
 }
 
 function _validateStep(step, idx) {

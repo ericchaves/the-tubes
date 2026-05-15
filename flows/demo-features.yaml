@@ -1,6 +1,16 @@
 target: http://demo.tt.localhost:8080
 
 # ─────────────────────────────────────────────────────────────────
+# DOTENV
+# Lista de arquivos .env a importar (caminhos relativos ao manifest).
+# Vars do .env ficam disponíveis nos templates de todos os steps e
+# campos de manifest (target, loop, loopPauseMs, warmupMs, etc.).
+# Prioridade: dotenvVars < globalVars < stepVars.
+# ─────────────────────────────────────────────────────────────────
+dotenv:
+  - demo.env
+
+# ─────────────────────────────────────────────────────────────────
 # GLOBAL VARS
 # Resolvidas UMA vez antes do loop. Estáveis para todos os steps.
 # Suportam templates Nunjucks e faker.js via {{ faker.<módulo>.<método> }}.
@@ -195,3 +205,24 @@ steps:
       headers:
         content-type: "application/json"
         x-session-id: "{{ sessionId }}"
+
+  # ───────────────────────────────────────────────────────────────
+  # STEP 11 — variáveis de .env em path, headers e bodyPatch
+  # API_VERSION, DEMO_NOTIFY_EMAIL e DEMO_FEATURE vêm de demo.env.
+  # dotenvVars têm prioridade menor que global vars e step vars:
+  # se uma global var tiver o mesmo nome de uma var do .env,
+  # a global var vence.
+  # ───────────────────────────────────────────────────────────────
+  - capture: demo/demo.312699858354176.req.yaml
+    idleMs: 150
+    overrides:
+      # path usa API_VERSION do .env e user.email da global var
+      path: "/api/{{ API_VERSION }}/orders?notify=true&by={{ DEMO_NOTIFY_EMAIL }}"
+      headers:
+        x-api-version: "{{ API_VERSION }}"
+        x-feature: "{{ DEMO_FEATURE }}"
+        x-operator: "{{ user.name }}"   # global var continua disponível
+      bodyPatch:
+        version: "{{ API_VERSION }}"
+        "audit.notifiedBy": "{{ DEMO_NOTIFY_EMAIL }}"
+        "audit.updatedBy": "{{ user.email }}"   # global var + dotenv juntos

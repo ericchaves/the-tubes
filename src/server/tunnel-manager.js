@@ -59,7 +59,7 @@ export class TunnelManager {
     if (requestedSubdomain) {
       // Validate subdomain format
       if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(requestedSubdomain)) {
-        throw Object.assign(new Error('Invalid subdomain format'), { status: 403 });
+        throw Object.assign(new Error('Invalid subdomain format'), { status: 400 });
       }
       // Check if someone else holds this subdomain
       if (this._tunnels.has(requestedSubdomain)) {

@@ -186,8 +186,8 @@ export function handleAdminRequest(req, res, services) {
         if (err.code === 'NO_PORTS_AVAILABLE') {
           return sendJson(res, 503, { error: err.message });
         }
-        if (err.status === 403) {
-          return sendJson(res, 403, { error: err.message });
+        if (err.status >= 400 && err.status < 500) {
+          return sendJson(res, err.status, { error: err.message });
         }
         globalLog?.push('server.error', {
           reason: 'internal_error',
@@ -320,15 +320,19 @@ function sendUnauthorized(res) {
   res.end(json);
 }
 
-function readBody(req, maxBytes = 1024 * 64) {
+export function readBody(req, maxBytes = 1024 * 64) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let aborted = false;
     req.on('data', chunk => {
+      if (aborted) return;
       size += chunk.length;
       if (size > maxBytes) {
+        aborted = true;
         req.destroy();
         reject(new Error('Body too large'));
+        return;
       }
       chunks.push(chunk);
     });

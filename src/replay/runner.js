@@ -2,9 +2,10 @@ import { resolve } from 'node:path';
 import { styleText } from 'node:util';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
-import { connect as netConnect } from 'node:net';
+import { connect as netConnect, isIP } from 'node:net';
+import { connect as tlsConnect } from 'node:tls';
 import { randomBytes } from 'node:crypto';
-import { loadCaptureRequest, loadCaptureWs } from './manifest.js';
+import { loadCaptureRequest, loadCaptureWs, loadDotEnvFiles } from './manifest.js';
 import { resolveVars, renderDeep, renderString, applyBodyPatch } from './template.js';
 import { createDebug } from '../debug.js';
 
@@ -26,20 +27,26 @@ const debug = createDebug('replay');
  *   { stepIdx, total, method, url, status, durationMs, error }
  */
 export async function runReplaySession(manifest, manifestDir, opts = {}) {
-  const target = opts.targetUrl ?? manifest.target;
-  const loop = opts.loop ?? manifest.loop ?? manifest.loopCount ?? 1;
-  const loopPauseMs = opts.loopPauseMs ?? manifest.loopPauseMs ?? manifest.pause ?? 0;
-  const warmupMs = opts.warmupMs ?? manifest.warmupMs ?? manifest.warmup ?? 0;
-  const sendHostHeader = opts.sendHostHeader ?? manifest.sendHostHeader ?? false;
+  // Load .env files declared in manifest.dotenv (resolved once, before loop)
+  const dotenvVars = loadDotEnvFiles(manifest.dotenv ?? [], manifestDir);
+
+  // Resolve global vars with dotenvVars as extra context
+  const globalVars = resolveVars(manifest.vars, dotenvVars);
+
+  // Context for manifest-level template fields
+  const manifestCtx = { ...dotenvVars, ...globalVars };
+
+  const target = opts.targetUrl ?? _renderStr(manifest.target, manifestCtx);
+  const loop = opts.loop ?? _renderInt(manifest.loop ?? manifest.loopCount ?? 1, manifestCtx);
+  const loopPauseMs = opts.loopPauseMs ?? _renderInt(manifest.loopPauseMs ?? manifest.pause ?? 0, manifestCtx);
+  const warmupMs = opts.warmupMs ?? _renderInt(manifest.warmupMs ?? manifest.warmup ?? 0, manifestCtx);
+  const sendHostHeader = opts.sendHostHeader ?? _renderBool(manifest.sendHostHeader ?? false, manifestCtx);
   const dryRun = opts.dryRun ?? false;
   const onStep = opts.onStep ?? null;
 
   console.log(styleText('cyan', `Replay: ${manifest.steps.length} steps → ${target}`));
   if (dryRun) console.log(styleText('yellow', '  DRY RUN — no requests will be sent'));
   console.log(`  loops: ${loop}  loop-pause: ${loopPauseMs}ms  warmup: ${warmupMs}ms`);
-
-  // Resolve global vars once before the loop — stable across all iterations
-  const globalVars = resolveVars(manifest.vars, {});
 
   if (warmupMs > 0) {
     debug('warmup %dms', warmupMs);
@@ -54,9 +61,9 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
       const isWs = step.type === 'ws';
       const isInline = !(step.capture ?? step.request);
 
-      // Step vars re-resolve each iteration; they can reference global vars
-      const stepVars = resolveVars(step.vars, globalVars);
-      const context = { ...globalVars, ...stepVars };
+      // Step vars re-resolve each iteration; they can reference global vars and dotenv vars
+      const stepVars = resolveVars(step.vars, { ...dotenvVars, ...globalVars });
+      const context = { ...dotenvVars, ...globalVars, ...stepVars };
 
       if (isWs) {
         // ── WebSocket step ──────────────────────────────────────────────────
@@ -68,7 +75,7 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
             frames: step.frames ?? [],
           }, context);
         } else {
-          const capturePath = resolve(manifestDir, step.capture ?? step.request);
+          const capturePath = resolve(manifestDir, renderString(step.capture ?? step.request, context));
           try {
             wsData = loadCaptureWs(capturePath);
           } catch (err) {
@@ -131,7 +138,7 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
             bodyEncoding: step.bodyEncoding ?? 'utf8',
           }, context);
         } else {
-          const capturePath = resolve(manifestDir, step.capture ?? step.request);
+          const capturePath = resolve(manifestDir, renderString(step.capture ?? step.request, context));
           try {
             reqData = loadCaptureRequest(capturePath);
           } catch (err) {
@@ -217,7 +224,7 @@ export async function runReplaySession(manifest, manifestDir, opts = {}) {
         }
       }
 
-      const idleMs = step.idleMs ?? step.idle ?? 0;
+      const idleMs = _renderInt(step.idleMs ?? step.idle ?? 0, context);
       if (idleMs > 0) {
         debug('idle %dms after step %d', idleMs, stepIdx + 1);
         await sleep(idleMs);
@@ -237,6 +244,21 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+function _renderStr(val, ctx) {
+  return typeof val === 'string' ? renderString(val, ctx) : val;
+}
+
+function _renderInt(val, ctx) {
+  const s = _renderStr(val, ctx);
+  return typeof s === 'string' ? (parseInt(s, 10) || 0) : (s ?? 0);
+}
+
+function _renderBool(val, ctx) {
+  if (typeof val !== 'string') return Boolean(val);
+  const s = renderString(val, ctx);
+  return s === 'true' || s === '1';
+}
+
 /**
  * Open a WebSocket connection, send all client-direction frames, then close.
  * Uses a raw TCP socket so we can set arbitrary headers (including Host).
@@ -246,7 +268,7 @@ function sleep(ms) {
  * @param {object} headers - extra HTTP headers to include in the upgrade request
  * @returns {Promise<101>}
  */
-function wsSend(url, frames, headers) {
+export function wsSend(url, frames, headers) {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
     const port = parseInt(urlObj.port) || (urlObj.protocol === 'wss:' ? 443 : 80);
@@ -267,7 +289,11 @@ function wsSend(url, frames, headers) {
       Object.entries(upgradeHeaders).map(([k, v]) => `${k}: ${v}`).join('\r\n') +
       '\r\n\r\n';
 
-    const socket = netConnect({ host: urlObj.hostname, port });
+    const tlsOpts = { host: urlObj.hostname, port };
+    if (!isIP(urlObj.hostname)) tlsOpts.servername = urlObj.hostname;
+    const socket = urlObj.protocol === 'wss:'
+      ? tlsConnect(tlsOpts)
+      : netConnect({ host: urlObj.hostname, port });
     let buf = Buffer.alloc(0);
     let upgraded = false;
     let done = false;

@@ -260,12 +260,3 @@ function extractTunnelId(host, publicDomain) {
   return sub || null;
 }
 
-function isAdminPath(url) {
-  return url && (
-    url.startsWith('/api/') ||
-    url === '/api' ||
-    url === '/healthz' ||
-    url === '/tubes' ||
-    url.startsWith('/tubes/')
-  );
-}

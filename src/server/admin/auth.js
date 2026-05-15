@@ -15,9 +15,15 @@
  * @returns {boolean}
  */
 
+import { timingSafeEqual } from 'node:crypto';
 import { getClientIp } from '../../common/http-utils.js';
 
 const LOOPBACK = new Set(['127.0.0.1', '::1', 'localhost']);
+
+function safeEqual(a, b) {
+  const ab = Buffer.from(a), bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
 
 export function isAdminAuthorized(req, config) {
   const { adminToken, trustForwardHeaders } = config;
@@ -30,13 +36,13 @@ export function isAdminAuthorized(req, config) {
 
   // Check X-TT-Admin-Token header first
   const headerToken = req.headers['x-tt-admin-token'];
-  if (headerToken) return headerToken === adminToken;
+  if (headerToken) return safeEqual(headerToken, adminToken);
 
   const authHeader = req.headers['authorization'];
 
   // Authorization: Bearer <token>
   if (authHeader?.startsWith('Bearer ')) {
-    return authHeader.slice(7) === adminToken;
+    return safeEqual(authHeader.slice(7), adminToken);
   }
 
   // Authorization: Basic <base64(user:token)> — browser-friendly
@@ -44,7 +50,7 @@ export function isAdminAuthorized(req, config) {
     const decoded = Buffer.from(authHeader.slice(6), 'base64').toString('utf8');
     const colonIdx = decoded.indexOf(':');
     if (colonIdx !== -1) {
-      return decoded.slice(colonIdx + 1) === adminToken;
+      return safeEqual(decoded.slice(colonIdx + 1), adminToken);
     }
   }
 

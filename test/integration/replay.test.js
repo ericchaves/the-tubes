@@ -737,6 +737,246 @@ describe('runReplaySession — overrides (path, body, bodyPatch)', () => {
 
 // ─── New tests: capture files not rendered ────────────────────────────────────
 
+describe('dotenv[] — .env file loading', () => {
+  let dir;
+  before(() => { dir = mkdtempSync(join(tmpdir(), 'replay-dotenv-')); });
+  after(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  function writeEnv(name, content) {
+    writeFileSync(join(dir, name), content);
+  }
+
+  function writeCapFile(name) {
+    writeFileSync(join(dir, name), stringify({
+      request: { method: 'POST', path: '/x', headers: { 'content-type': 'application/json' }, body: '{"a":1}' },
+    }));
+  }
+
+  it('makes dotenv vars available in overrides.path', async () => {
+    writeEnv('.env', 'API_VERSION=v3\n');
+    writeCapFile('cap.req.yaml');
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end(); });
+
+    const manifest = {
+      target: url,
+      dotenv: ['.env'],
+      steps: [{ capture: './cap.req.yaml', overrides: { path: '/api/{{ API_VERSION }}/events' } }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].path, '/api/v3/events');
+    await stopTarget(server);
+  });
+
+  it('makes dotenv vars available in overrides.headers', async () => {
+    writeEnv('.env', 'SESSION_TOKEN=tok-xyz\n');
+    writeCapFile('cap2.req.yaml');
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end(); });
+
+    const manifest = {
+      target: url,
+      dotenv: ['.env'],
+      steps: [{ capture: './cap2.req.yaml', overrides: { headers: { 'x-token': '{{ SESSION_TOKEN }}' } } }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].headers['x-token'], 'tok-xyz');
+    await stopTarget(server);
+  });
+
+  it('makes dotenv vars available in overrides.body', async () => {
+    writeEnv('.env', 'TENANT=acme\n');
+    writeCapFile('cap3.req.yaml');
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end(); });
+
+    const manifest = {
+      target: url,
+      dotenv: ['.env'],
+      steps: [{ capture: './cap3.req.yaml', overrides: { body: '{"tenant":"{{ TENANT }}"}' } }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    const body = JSON.parse(reqs[0].body.toString());
+    assert.equal(body.tenant, 'acme');
+    await stopTarget(server);
+  });
+
+  it('makes dotenv vars available in overrides.bodyPatch', async () => {
+    writeEnv('.env', 'REGION=us-east-1\n');
+    writeCapFile('cap4.req.yaml');
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end(); });
+
+    const manifest = {
+      target: url,
+      dotenv: ['.env'],
+      steps: [{ capture: './cap4.req.yaml', overrides: { bodyPatch: { region: '{{ REGION }}' } } }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    const body = JSON.parse(reqs[0].body.toString());
+    assert.equal(body.region, 'us-east-1');
+    await stopTarget(server);
+  });
+
+  it('makes dotenv vars available as context for manifest global vars', async () => {
+    writeEnv('.env', 'BASE_URL=http://example.com\n');
+    writeCapFile('cap5.req.yaml');
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end(); });
+
+    const manifest = {
+      target: url,
+      dotenv: ['.env'],
+      vars: { apiUrl: '{{ BASE_URL }}/api' },
+      steps: [{ capture: './cap5.req.yaml', overrides: { path: '/?url={{ apiUrl }}' } }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.ok(reqs[0].path.includes('http://example.com/api'), `expected apiUrl in path, got: ${reqs[0].path}`);
+    await stopTarget(server);
+  });
+
+  it('makes dotenv vars available as context for step vars', async () => {
+    writeEnv('.env', 'PREFIX=pfx\n');
+    writeCapFile('cap6.req.yaml');
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end(); });
+
+    const manifest = {
+      target: url,
+      dotenv: ['.env'],
+      steps: [{
+        capture: './cap6.req.yaml',
+        vars: { tag: '{{ PREFIX }}-001' },
+        overrides: { path: '/items/{{ tag }}' },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].path, '/items/pfx-001');
+    await stopTarget(server);
+  });
+
+  it('renders manifest.target as a template using dotenv vars', async () => {
+    writeCapFile('cap7.req.yaml');
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end(); });
+
+    // Extract host:port from url to use in .env
+    const urlObj = new URL(url);
+    writeEnv('.env', `TARGET_HOST=${urlObj.hostname}\nTARGET_PORT=${urlObj.port}\n`);
+
+    const manifest = {
+      target: `http://{{ TARGET_HOST }}:{{ TARGET_PORT }}`,
+      dotenv: ['.env'],
+      steps: [{ capture: './cap7.req.yaml' }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs.length, 1);
+    await stopTarget(server);
+  });
+
+  it('renders manifest.loop as a template using dotenv vars', async () => {
+    writeEnv('.env', 'LOOP_COUNT=3\n');
+    writeCapFile('cap8.req.yaml');
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end(); });
+
+    const manifest = {
+      target: url,
+      dotenv: ['.env'],
+      loop: '{{ LOOP_COUNT }}',
+      steps: [{ capture: './cap8.req.yaml' }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs.length, 3);
+    await stopTarget(server);
+  });
+
+  it('renders step.idleMs as a template using dotenv vars (no blocking)', async () => {
+    writeEnv('.env', 'STEP_DELAY=0\n');
+    writeCapFile('cap9.req.yaml');
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end(); });
+
+    const manifest = {
+      target: url,
+      dotenv: ['.env'],
+      steps: [{ capture: './cap9.req.yaml', idleMs: '{{ STEP_DELAY }}' }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs.length, 1);
+    await stopTarget(server);
+  });
+
+  it('renders step.capture path as a template using dotenv vars', async () => {
+    writeEnv('.env', 'CAP_NAME=dyn-cap\n');
+    writeFileSync(join(dir, 'dyn-cap.req.yaml'), stringify({
+      request: { method: 'GET', path: '/dynamic', headers: {}, body: '' },
+    }));
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end(); });
+
+    const manifest = {
+      target: url,
+      dotenv: ['.env'],
+      steps: [{ capture: './{{ CAP_NAME }}.req.yaml' }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.equal(reqs[0].path, '/dynamic');
+    await stopTarget(server);
+  });
+
+  it('global vars override dotenv vars with the same name', async () => {
+    writeEnv('.env', 'PRIORITY=from-dotenv\n');
+    writeCapFile('cap10.req.yaml');
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end(); });
+
+    const manifest = {
+      target: url,
+      dotenv: ['.env'],
+      vars: { PRIORITY: 'from-globalvars' },
+      steps: [{ capture: './cap10.req.yaml', overrides: { path: '/x?p={{ PRIORITY }}' } }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.ok(reqs[0].path.includes('from-globalvars'), `expected global var to win, got: ${reqs[0].path}`);
+    await stopTarget(server);
+  });
+
+  it('merges two .env files — second overrides first on collision', async () => {
+    writeEnv('.env.first', 'KEY=first\nONLY_FIRST=yes\n');
+    writeEnv('.env.second', 'KEY=second\nONLY_SECOND=yes\n');
+    writeCapFile('cap11.req.yaml');
+    const { server, reqs, url } = await startTarget((req, res) => { res.writeHead(200); res.end(); });
+
+    const manifest = {
+      target: url,
+      dotenv: ['.env.first', '.env.second'],
+      steps: [{
+        capture: './cap11.req.yaml',
+        overrides: { path: '/x?key={{ KEY }}&a={{ ONLY_FIRST }}&b={{ ONLY_SECOND }}' },
+      }],
+    };
+    await runReplaySession(manifest, dir, {});
+
+    assert.ok(reqs[0].path.includes('key=second'));
+    assert.ok(reqs[0].path.includes('a=yes'));
+    assert.ok(reqs[0].path.includes('b=yes'));
+    await stopTarget(server);
+  });
+
+  it('throws when a declared .env file is missing', async () => {
+    const manifest = {
+      target: 'http://localhost:9999',
+      dotenv: ['.env.does-not-exist'],
+      steps: [{ path: '/x', method: 'GET' }],
+    };
+    await assert.rejects(
+      () => runReplaySession(manifest, dir, {}),
+      /\.env file not found/i,
+    );
+  });
+});
+
 describe('runReplaySession — capture files not rendered', () => {
   let dir;
   before(() => { dir = mkdtempSync(join(tmpdir(), 'replay-norender-')); });

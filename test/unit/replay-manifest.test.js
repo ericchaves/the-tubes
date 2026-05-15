@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { stringify } from '../../src/common/yaml-lite.js';
-import { loadManifest } from '../../src/replay/manifest.js';
+import { loadManifest, loadDotEnvFiles } from '../../src/replay/manifest.js';
 
 let tmpDir;
 
@@ -162,6 +162,119 @@ describe('loadManifest — step-level vars', () => {
     });
     const { manifest } = loadManifest(p);
     assert.equal(manifest.steps[0].vars, undefined);
+  });
+});
+
+describe('loadDotEnvFiles', () => {
+  before(setup);
+  after(teardown);
+
+  function writeEnv(name, content) {
+    const p = join(tmpDir, name);
+    writeFileSync(p, content);
+    return p;
+  }
+
+  it('parses KEY=value pairs', () => {
+    writeEnv('.env', 'API_KEY=abc123\nAPI_URL=http://localhost:3000\n');
+    const result = loadDotEnvFiles(['.env'], tmpDir);
+    assert.equal(result.API_KEY, 'abc123');
+    assert.equal(result.API_URL, 'http://localhost:3000');
+  });
+
+  it('strips double quotes', () => {
+    writeEnv('.env.quoted', 'TOKEN="secret value"\nHOST="example.com"\n');
+    const result = loadDotEnvFiles(['.env.quoted'], tmpDir);
+    assert.equal(result.TOKEN, 'secret value');
+    assert.equal(result.HOST, 'example.com');
+  });
+
+  it('strips single quotes', () => {
+    writeEnv('.env.single', "NAME='John Doe'\nROLE='admin'\n");
+    const result = loadDotEnvFiles(['.env.single'], tmpDir);
+    assert.equal(result.NAME, 'John Doe');
+    assert.equal(result.ROLE, 'admin');
+  });
+
+  it('ignores comment lines and empty lines', () => {
+    writeEnv('.env.comments', '# This is a comment\n\nKEY=value\n  # another comment\nOTHER=x\n');
+    const result = loadDotEnvFiles(['.env.comments'], tmpDir);
+    assert.equal(Object.keys(result).length, 2);
+    assert.equal(result.KEY, 'value');
+    assert.equal(result.OTHER, 'x');
+  });
+
+  it('ignores lines without = sign', () => {
+    writeEnv('.env.noeq', 'VALID=yes\nINVALID_LINE\nALSO=ok\n');
+    const result = loadDotEnvFiles(['.env.noeq'], tmpDir);
+    assert.equal(result.VALID, 'yes');
+    assert.equal(result.ALSO, 'ok');
+    assert.equal(result.INVALID_LINE, undefined);
+  });
+
+  it('value may contain = characters', () => {
+    writeEnv('.env.eqval', 'BASE64=abc=def==\n');
+    const result = loadDotEnvFiles(['.env.eqval'], tmpDir);
+    assert.equal(result.BASE64, 'abc=def==');
+  });
+
+  it('merges multiple files — later file overrides earlier on collision', () => {
+    writeEnv('.env.a', 'KEY=from_a\nONLY_A=yes\n');
+    writeEnv('.env.b', 'KEY=from_b\nONLY_B=yes\n');
+    const result = loadDotEnvFiles(['.env.a', '.env.b'], tmpDir);
+    assert.equal(result.KEY, 'from_b');
+    assert.equal(result.ONLY_A, 'yes');
+    assert.equal(result.ONLY_B, 'yes');
+  });
+
+  it('returns empty object for null list', () => {
+    assert.deepEqual(loadDotEnvFiles(null, tmpDir), {});
+  });
+
+  it('returns empty object for empty array', () => {
+    assert.deepEqual(loadDotEnvFiles([], tmpDir), {});
+  });
+
+  it('throws ConfigError when file is missing', () => {
+    assert.throws(
+      () => loadDotEnvFiles(['.env.missing'], tmpDir),
+      /\.env file not found/i,
+    );
+  });
+});
+
+describe('loadManifest — dotenv validation', () => {
+  before(setup);
+  after(teardown);
+
+  it('accepts manifest without dotenv key', () => {
+    const p = write('no-dotenv.yaml', {
+      target: 'http://x',
+      steps: [{ path: '/x', method: 'GET' }],
+    });
+    const { manifest } = loadManifest(p);
+    assert.equal(manifest.dotenv, undefined);
+  });
+
+  it('accepts manifest with dotenv as array', () => {
+    const envPath = join(tmpDir, '.env');
+    writeFileSync(envPath, 'KEY=val\n');
+    const p = write('with-dotenv.yaml', {
+      target: 'http://x',
+      dotenv: ['.env'],
+      steps: [{ path: '/x', method: 'GET' }],
+    });
+    const { manifest } = loadManifest(p);
+    assert.deepEqual(manifest.dotenv, ['.env']);
+  });
+
+  it('throws ConfigError when dotenv is not an array', () => {
+    const p = write('bad-dotenv.yaml', {
+      target: 'http://x',
+      dotenv: '.env',
+      steps: [{ path: '/x', method: 'GET' }],
+    });
+    assert.throws(() => loadManifest(p), /dotenv.*array/i);
   });
 });
 

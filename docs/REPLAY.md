@@ -101,20 +101,23 @@ steps:
 
 ### Manifest-level fields
 
+All string fields accept Nunjucks templates. `dotenv` vars, global `vars`, and faker are available as context.
+
 | Field | Description |
 |-------|-------------|
-| `target` | Webhook URL to send requests to |
-| `loop` | Number of times to repeat all steps (default: 1) |
-| `loopPauseMs` | Pause between loop iterations in ms (default: 0) |
-| `warmupMs` | Wait before starting the first step in ms (default: 0) |
-| `sendHostHeader` | Forward the original `Host` header from the capture (default: false) |
+| `target` | Webhook URL to send requests to (template-rendered) |
+| `loop` | Number of times to repeat all steps — default: 1 (template-rendered) |
+| `loopPauseMs` | Pause between loop iterations in ms — default: 0 (template-rendered) |
+| `warmupMs` | Wait before starting the first step in ms — default: 0 (template-rendered) |
+| `sendHostHeader` | Forward the original `Host` header from the capture — default: false (template-rendered) |
+| `dotenv` | List of `.env` file paths to import (relative to the manifest) |
 | `vars` | Global variables available as Nunjucks context in all steps |
 
 ### Step fields
 
 | Field | Description |
 |-------|-------------|
-| `capture` | Path to `.req.yaml` capture file (relative to the manifest). Omit to use inline fields. |
+| `capture` | Path to `.req.yaml` capture file (relative to the manifest, template-rendered) |
 | `method` | HTTP method for inline steps (default: `POST`) |
 | `path` | Request path for inline steps |
 | `headers` | Request headers for inline steps |
@@ -123,7 +126,7 @@ steps:
 | `type` | Set to `ws` for WebSocket steps |
 | `frames` | WebSocket frames for inline WS steps |
 | `vars` | Step-level variables (re-evaluated every loop iteration) |
-| `idleMs` | Wait after this step before the next (ms) |
+| `idleMs` | Wait after this step before the next in ms (template-rendered) |
 | `overrides.headers` | Headers to merge (template-rendered) |
 | `overrides.path` | Replace the captured path (template-rendered) |
 | `overrides.body` | Replace the entire body (template-rendered) |
@@ -133,7 +136,7 @@ steps:
 
 ## Templates (Nunjucks + Faker.js)
 
-Inline step content and all `overrides` values are rendered as [Nunjucks](https://mozilla.github.io/nunjucks/) templates before being sent. **Capture files are not rendered** — their content is used verbatim.
+Inline step content, all `overrides` values, and manifest-level string fields (`target`, `loop`, etc.) are rendered as [Nunjucks](https://mozilla.github.io/nunjucks/) templates before being sent. **Capture files are not rendered** — their content is used verbatim.
 
 [Faker.js](https://fakerjs.dev/) is available as `faker` in every template:
 
@@ -147,6 +150,65 @@ steps:
         "name": "{{ faker.person.fullName() }}",
         "email": "{{ faker.internet.email() }}"
       }
+```
+
+---
+
+## Environment Variables (`dotenv`)
+
+Declare a list of `.env` files at the root of the manifest. Their values are loaded once before the loop and made available as template variables in every step, override, and manifest-level field.
+
+```yaml
+target: http://localhost:3000/webhooks
+dotenv:
+  - .env
+  - .env.local
+```
+
+Example `.env` file:
+
+```dotenv
+# Application config
+API_VERSION=v2
+NOTIFY_EMAIL=team@example.com
+TARGET_HOST=localhost
+```
+
+Reference `.env` values the same way as `vars`:
+
+```yaml
+steps:
+  - capture: ./wa.req.yaml
+    overrides:
+      path: "/api/{{ API_VERSION }}/webhook"
+      headers:
+        x-notify: "{{ NOTIFY_EMAIL }}"
+```
+
+Paths are relative to the manifest file. Missing files throw an error.
+
+**Supported `.env` syntax:**
+- `KEY=value`
+- `KEY="value with spaces"`
+- `KEY='value'`
+- Lines starting with `#` are comments and are ignored
+- When multiple files declare the same key, the last file wins
+
+**Priority (lowest → highest):** dotenv vars < global `vars` < step `vars`
+
+If a global var and a `.env` key share the same name, the global var takes precedence. This lets you use `.env` as defaults and override them per-manifest.
+
+**Template rendering in manifest-level fields**
+
+`target`, `loop`, `loopPauseMs`, `warmupMs`, and `sendHostHeader` all support Nunjucks templates. `dotenv` vars and global `vars` are available:
+
+```yaml
+dotenv:
+  - .env
+
+# .env contains: TARGET_URL=http://localhost:3000
+target: "{{ TARGET_URL }}"
+loop: "{{ LOOP_COUNT }}"
 ```
 
 ---

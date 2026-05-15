@@ -226,7 +226,9 @@ export class TunnelCluster extends EventEmitter {
         if (resMsg) {
           this._inspector.captureResponse({ status, headers: resMsg.headers, body: resMsg.body }, captureId);
         }
-        this.emit('capture', { captureId, file: `${info.tunnelId}.${captureId}.req.yaml`, method, path });
+        if (captureId != null) {
+          this.emit('capture', { captureId, file: `${info.tunnelId}.${captureId}.req.yaml`, method, path });
+        }
       }
     };
 
@@ -304,6 +306,7 @@ export class TunnelCluster extends EventEmitter {
           reqHeaders: reqMsg.headers,
           frames: [...clientFrames, ...serverFrames],
         });
+        pair.requestEmitted = true;
         this.emit('capture', {
           captureId,
           file: `${info.tunnelId}.${captureId}.ws.yaml`,
@@ -336,6 +339,7 @@ export class TunnelCluster extends EventEmitter {
               reqHeaders: reqMsg.headers,
               frames: [...clientFrames, ...serverFrames],
             });
+            pair.requestEmitted = true;
             this.emit('capture', {
               captureId,
               file: `${info.tunnelId}.${captureId}.ws.yaml`,
